@@ -26,10 +26,13 @@ export function createSfx({ enabled = true } = {}) {
     try {
       if (!ctx) {
         const C = Ctor(); if (!C) return;
-        ctx = new C();
-        master = ctx.createGain(); master.gain.value = MASTER; master.connect(ctx.destination);
+        // Assigned only once the graph is built: a throw halfway must not leave a ctx with no master.
+        const c = new C();
+        const m = c.createGain(); m.gain.value = MASTER; m.connect(c.destination);
+        ctx = c; master = m;
       }
-      if (ctx.state === 'suspended') { const p = ctx.resume(); if (p && p.catch) p.catch(() => {}); }
+      // iOS reports 'interrupted' after an app switch or call, not 'suspended'; resume from both.
+      if (ctx.state !== 'running') { const p = ctx.resume(); if (p && p.catch) p.catch(() => {}); }
     } catch { /* audio is optional; never break the game */ }
   }
 

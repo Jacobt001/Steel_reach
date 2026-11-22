@@ -86,10 +86,12 @@ test('start/stop/start quickly: the stale frame from the first start is ignored'
 
 test('a render that throws does not kill the loop', () => {
   let n = 0;
-  const r = rig({ render: () => { n++; if (n === 2) throw new Error('boom'); } });
+  const errs = [];
+  const r = rig({ render: () => { n++; if (n === 2) throw new Error('boom'); }, onError: (e) => errs.push(e.message) });
   r.loop.start();
   r.frame(50);
-  assert.throws(() => r.frame(50), /boom/);
+  r.frame(50); // M1: contained and reported, not thrown out of the frame
+  assert.deepEqual(errs, ['boom']);
   r.frame(50);
   assert.equal(n, 3);
   assert.equal(r.steps, 3);
@@ -116,4 +118,17 @@ test('tps is configurable', () => {
 
 test('the defaults do not touch the DOM until start() (Node can import and build a loop)', () => {
   assert.doesNotThrow(() => createLoop({ step() {}, render() {} }));
+});
+
+test('M1: a throwing step or render is reported once, and frames, steps and renders carry on', () => {
+  const errs = []; let steps = 0, renders = 0;
+  const r = rig({
+    step: () => { steps++; throw new Error('boom step'); },
+    render: () => { renders++; throw new Error('boom render'); },
+    onError: (e, kind) => errs.push(kind),
+  });
+  r.loop.start();
+  for (let i = 0; i < 40; i++) assert.ok(r.frame(50)); // every frame still requests the next one
+  assert.ok(steps >= 30 && renders === 40);
+  assert.deepEqual(errs.sort(), ['render', 'step']);
 });

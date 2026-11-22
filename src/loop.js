@@ -16,11 +16,23 @@ export function createLoop({
   step, render, tps = TPS,
   // Wrapped: performance.now called detached throws "Illegal invocation" in browsers.
   raf = (f) => requestAnimationFrame(f), now = () => performance.now(), isHidden = () => document.hidden,
+  // Called once per kind ('step' | 'render') the first time it throws; the loop itself carries on.
+  onError = (err, kind) => console.error(`Steelreach ${kind} failed`, err),
 }) {
   let running = false;
   let gen = 0;  // bumps on every start/stop, so a frame requested by an earlier start is ignored
   let last = 0, acc = 0; // acc: owed time in ticks
   let frames = 0, fpsAt = 0, fps = 0, tickMs = 0;
+  const reported = new Set();
+  // A throw in one step or one render must not freeze the picture or stop saving: the frame
+  // goes on, and the first failure of each kind is reported (not every frame, 60 times a second).
+  function guard(kind, fn, arg) {
+    try { fn(arg); } catch (err) {
+      if (reported.has(kind)) return;
+      reported.add(kind);
+      try { onError(err, kind); } catch { /* reporting must not throw either */ }
+    }
+  }
 
   function frame(token) {
     if (token !== gen || !running) return;
@@ -38,13 +50,13 @@ export function createLoop({
     if (n > MAX_STEPS) n = MAX_STEPS;
     for (let i = 0; i < n; i++) {
       const s = now();
-      step();
+      guard('step', step);
       const d = now() - s;
       tickMs = tickMs ? tickMs + (d - tickMs) * 0.1 : d; // smoothed: one slow tick shouldn't swing it
     }
     frames++;
     if (t - fpsAt >= FPS_WINDOW_MS) { fps = (frames * 1000) / (t - fpsAt); frames = 0; fpsAt = t; }
-    render(acc);
+    guard('render', render, acc);
   }
 
   return {

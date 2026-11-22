@@ -43,7 +43,7 @@ async function boot() {
 
   // The sim waits while Welcome or the account choice is up: a tier-up from the old game would
   // otherwise queue behind the sheet and pop up over the game the player picks.
-  let welcomeOpen = false, choiceOpen = false;
+  let welcomeOpen = false, choiceOpen = false, errorShown = false;
   const paused = () => welcomeOpen || choiceOpen;
   function showWelcome() {
     welcomeOpen = true;
@@ -161,10 +161,16 @@ async function boot() {
 
   loop = createLoop({
     step: () => { if (!paused()) tick(session.game); },
+    // M1: said once, however long a bug keeps throwing; frames and autosaves carry on.
+    onError(err, kind) {
+      console.error(`Steelreach ${kind} failed`, err);
+      if (!errorShown) { errorShown = true; ui.toast('Something went wrong — your game is still saved'); }
+    },
     render(alpha) {
       const g = session.game;
-      drainEvents(g);
+      // First, so a throwing draw or UI update can't stop the autosave clock.
       session.frame();
+      drainEvents(g);
       tools.update(performance.now());
       ui.render();
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -191,4 +197,11 @@ async function boot() {
   }
 }
 
-boot().catch((err) => { console.error('Steelreach failed to start', err); });
+// A blank page tells the player nothing; saves are never written before boot has read them.
+boot().catch((err) => {
+  console.error('Steelreach failed to start', err);
+  const p = document.createElement('p');
+  p.textContent = 'Steelreach could not start. Close and reopen it; your saved game has not been touched.';
+  p.style.cssText = 'position:fixed;inset:0;margin:0;padding:24px;display:flex;align-items:center;justify-content:center;text-align:center;font:18px system-ui,sans-serif;background:#111;color:#eee;z-index:99';
+  document.body.append(p);
+});
