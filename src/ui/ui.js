@@ -690,6 +690,24 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
     });
   }
 
+  // A decision only the player can make (boot: the account holds a newer save than the factory
+  // they've built on). Modal, so it can't be swiped away unanswered; queued like the other
+  // announcements. An option with `confirm` needs a second tap, for choices that throw a save away.
+  function showChoice(title, text, options) {
+    announce(() => {
+      openSheet(title, () => {
+        const nodes = [h('p', { class: 'lead', text })];
+        options.forEach((o, i) => {
+          const b = btn(`btn wide${i === 0 ? ' primary' : ''}`, o.label);
+          const act = () => { closeSheet(); o.act?.(); };
+          if (o.confirm) twoTap(b, o.label, o.confirm, act); else on(b, act);
+          nodes.push(b);
+        });
+        return { nodes };
+      }, { kind: 'choice', modal: true, announce: true });
+    });
+  }
+
   // --- per-frame work ------------------------------------------------------------------------
   let slowAt = -Infinity;
   function tierChanged() {
@@ -754,5 +772,5 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
   show(E.hint, showsHint(g));
   sync();
 
-  return { render, inspect, toast, showWelcome, showTierUp, showComplete, sync, setGame };
+  return { render, inspect, toast, showWelcome, showTierUp, showComplete, showChoice, sync, setGame };
 }

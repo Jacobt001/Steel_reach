@@ -32,7 +32,8 @@ body {
   box-sizing: border-box; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%;
 }
-#game { display: block; width: 100%; height: 100%; }
+/* The game owns every touch on the map: no browser pan, pinch zoom or double-tap zoom. */
+#game { display: block; width: 100%; height: 100%; touch-action: none; }
 /* Component display rules below would otherwise beat the hidden attribute. */
 [hidden] { display: none !important; }
 *, *::before, *::after { box-sizing: border-box; }
