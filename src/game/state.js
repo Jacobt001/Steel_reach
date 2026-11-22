@@ -14,7 +14,7 @@ export const sizeOf = (type) => BUILDINGS[type === 'tunnel_in' || type === 'tunn
 function initialState(type, props) {
   switch (type) {
     case 'belt': return { items: [], blocked: null, side: 0 };
-    case 'bridge': return { dirH: props.dirH ?? 1, dirV: props.dirV ?? 0, h: [], v: [] };
+    case 'bridge': return { dirH: props.dirH ?? 1, dirV: props.dirV ?? 0, laneH: [], laneV: [] };
     case 'tunnel_in': return { pair: props.pair ?? 0, under: [] };
     case 'tunnel_out': return { pair: props.pair ?? 0, items: [] };
     case 'splitter': return { hold: null, rr: 0 };

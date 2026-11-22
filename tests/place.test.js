@@ -31,3 +31,15 @@ test('undo reverts a whole action and is capped at 20', () => {
   for (let i = 0; i < 25; i++) doAction(g, () => place(g, 'belt', i, 5, {dir:1}));
   let n = 0; while (undo(g)) n++; assert.equal(n, 20);
 });
+test('bridge keeps a 1x1 footprint: erase frees the tile', () => {
+  const g = testGame(); const b = place(g, 'bridge', 5, 5);
+  assert.equal(b.h, 1); assert.equal(b.w, 1); assert.deepEqual(b.laneH, []); assert.deepEqual(b.laneV, []);
+  assert.equal(erase(g, 5, 5), true);
+  assert.equal(entAt(g, 5, 5), null); assert.equal(canPlace(g, 'belt', 5, 5).ok, true);
+});
+test('undo of a bridge erase restores id, dirH/dirV and footprint', () => {
+  const g = testGame(); const b = place(g, 'bridge', 6, 6, {dirH:3, dirV:2}); const id = b.id;
+  doAction(g, () => erase(g, 6, 6)); assert.equal(entAt(g, 6, 6), null);
+  assert.ok(undo(g)); const r = entAt(g, 6, 6);
+  assert.equal(r.id, id); assert.equal(r.dirH, 3); assert.equal(r.dirV, 2); assert.equal(r.h, 1); assert.equal(r.w, 1);
+});
