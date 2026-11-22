@@ -32,6 +32,7 @@
   - "<Machine> can't use <Item>"
   - "<N> <Item>, waiting for <Item>"
   - Continue / New game, with "Tap again to start over"
+- **Repo:** `Jacobt001/Steel_reach`. Attach it with `mcp__claude-code-remote__add_repo` (`access:'push'`) and clone it; the repo root is the project root. Build on branch **`build`** and push after every task with `git -c push.negotiate=true push -u origin build`, so work survives across sessions. Task 19 merges `build` into `main`. `gh` has no valid token in this environment, so anything that needs the GitHub API falls back to asking Jacob.
 - The game is named **Steelreach**. The artifact's account save is the doc `data/users/<id>/steelreach`.
 - Every commit message ends with:
   ```
@@ -1394,14 +1395,14 @@ git add -A && git commit -m "test: iPhone-emulated browser check, perf, screensh
 
 - [ ] **Step 2: Declare the save capability.** `declare_capabilities` on that slug with `{db:{}, user:{}}`. This is a new page, so publish first, then declare. Confirm with `read_declaration`.
 
-- [ ] **Step 3: Create the GitHub repo.** Jacob authorized this. Run `gh repo create Jacobt001/steelreach --public --description "Steelreach factory game"`. If `gh` has no valid token (it didn't when this plan was written), ask Jacob to create an empty public repo named `steelreach` on GitHub and wait. Then call `mcp__claude-code-remote__add_repo` with `owner:'Jacobt001', repo:'steelreach', access:'push'` and follow its clone instructions.
+- [ ] **Step 3: Confirm the repo is public.** The repo `Jacobt001/Steel_reach` already exists, and Jacob agreed to make it public for free Pages. WebFetch `https://github.com/Jacobt001/Steel_reach`. If it isn't public yet, ask Jacob to flip it (Settings → General → Danger Zone → Change visibility → Public) and wait.
 
-- [ ] **Step 4: Push the source and the site.** Push the source to `main`. Push the contents of `dist/home` to a `gh-pages` branch (an orphan branch whose root is `index.html`, `manifest.webmanifest`, the icons, and `.nojekyll`).
+- [ ] **Step 4: Push the source and the site.** Merge `build` into `main` and push `main`. Push the contents of `dist/home` to a `gh-pages` branch (an orphan branch whose root is `index.html`, `manifest.webmanifest`, the icons, and `.nojekyll`).
 
-- [ ] **Step 5: Verify the site is live.** WebFetch `https://jacobt001.github.io/steelreach/` and `…/manifest.webmanifest`, allowing up to a few minutes for the first deploy. If Pages didn't auto-enable, run `gh api -X POST repos/Jacobt001/steelreach/pages -f "source[branch]=gh-pages" -f "source[path]=/"`. If that isn't permitted, ask Jacob to set Settings → Pages → Branch: `gh-pages`.
+- [ ] **Step 5: Verify the site is live.** WebFetch `https://jacobt001.github.io/Steel_reach/` and `…/manifest.webmanifest`, allowing up to a few minutes for the first deploy. If it 404s, ask Jacob to set Settings → Pages → Source: Deploy from a branch → `gh-pages` / root. Then re-check.
 
 - [ ] **Step 6: Write `docs/DEPLOY.md` and commit.** It records the artifact URL, the Pages URL, how to republish (`npm run build`, then `publish_files` with slug and base_version, and push `dist/home` to `gh-pages`), and the iPhone steps: open the Pages link in Safari → Share → Add to Home Screen.
 
 ```bash
-git add -A && git commit -m "docs: deployment record" && git push origin main
+git add -A && git commit -m "docs: deployment record" && git -c push.negotiate=true push origin main
 ```

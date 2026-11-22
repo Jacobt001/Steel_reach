@@ -74,7 +74,7 @@ He wants a game that is "far better." In his own picks, that means it should be:
 - **Two builds from one source (Jacob's call):**
   1. **Claude link:** the artifact. It saves to his Claude account, opens in the Claude app or Safari, and the app's or browser's bars stay visible.
   2. **Home Screen version:** the same game hosted at its own address, set up as a web app (manifest, `apple-mobile-web-app-capable`, `display: standalone`, Home Screen icon, safe-area padding). Added to the iPhone Home Screen, it opens in **true full screen** with no browser bars. It saves **on the phone only**, since the Claude account save isn't available outside Claude. iPhones don't allow a full-screen API for web pages (only for video), so this is the only route to full screen.
-  - **Hosting (my call):** GitHub Pages on Jacob's GitHub account (`Jacobt001`). Free Pages needs a **public** repo, which is fine because the game holds no private data. If this session can't create the repo, the builder asks Jacob to create one empty public repo named `steelreach`.
+  - **Hosting:** GitHub Pages from Jacob's repo **`Jacobt001/Steel_reach`**. Jacob is making it public, since free Pages needs a public repo and the game holds no private data. The source lives on `main` and the built site on the `gh-pages` branch.
   - **Save code:** both builds have **Copy save code / Load save code** in the Menu, so he can move progress between them. The code is a compact text string. Copy uses the clipboard from a button tap; Load uses a paste box.
   - **Focus mode (my call):** both builds have a button that hides the game's own top and bottom bars, leaving just the map and a small floating button to bring them back. This gives the most screen possible inside the Claude link too.
 - **Primary device:** an **iPhone**, in portrait, with touch. Jacob uses both the Claude app and Safari. It must also work with a mouse on desktop, but touch comes first.
@@ -338,4 +338,4 @@ These are things a sensible builder can decide without changing what Jacob gets:
 7. **Undo** (last 20 actions) and a **magnifier bubble** for drawing belts.
 8. **Items on belts and in machines are saved.**
 9. **Working name "Steelreach."**
-10. **Home Screen version hosted on GitHub Pages** (public repo on your account), plus a **focus mode** in both builds.
+10. **Home Screen version hosted on GitHub Pages** from your `Steel_reach` repo, plus a **focus mode** in both builds.
