@@ -29,7 +29,8 @@ test('a tier-up does not double-fire, and tier 13 unlocks everything', () => {
 });
 test('research recalculates mods: additive, replacing, dirty flags, events', () => {
   const g = testGame({tier:10});
-  g.stock = { cable: 60, turbine: 10, iron_plate: 30 };
+  const cost = (id) => RESEARCH.find(r => r.id === id).cost; // read, not hardcoded: the balance pass tunes costs
+  g.stock = { ...cost('widePoles'), ...cost('deepDrills'), iron_plate: 30 };
   g.powerDirty = g.topoDirty = false;
   assert.equal(buyResearch(g, 'widePoles').ok, true);
   assert.equal(g.mods.poleReach, 12); assert.equal(g.mods.coverHalf, 5);
