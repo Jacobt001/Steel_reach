@@ -7,6 +7,7 @@ import { createGame } from './game/state.js';
 import { serialize, tryLoad } from './save/serialize.js';
 import { encodeSaveCode, decodeSaveCode } from './save/code.js';
 import { createSaver } from './save/stores.js';
+import { BAL } from './config.js';
 
 export const SAVE_KEY = 'steelreach';           // createLocalStore's default key
 export const BACKUP_KEY = 'steelreach-backup';
@@ -18,6 +19,8 @@ export const ACCOUNT_BACKUP_KEY_2 = 'steelreach-backup-account-2';
 const SLOTS = { local: [BACKUP_KEY, BACKUP_KEY_2], account: [ACCOUNT_BACKUP_KEY, ACCOUNT_BACKUP_KEY_2] };
 // Account load retries (R21): soon at first, then once a minute for as long as it takes.
 export const RETRY_MS = [5000, 15000, 30000, 60000];
+// Nothing saved for this long: the warning chip appears (I1).
+export const STALE_MS = 30000;
 
 const isObj = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
 const stamp = (o) => (Number.isFinite(o?.savedAt) ? o.savedAt : -Infinity);
@@ -107,19 +110,47 @@ export function createSession({
   let curSavedAt = savedAt; // savedAt of the save the open game came from; -Infinity for a new world
   let touched = false;      // placed, erased, started over or loaded a code since opening
   let acct = null, accountOpen = false;
+  // savedAt of the newest account save this page has loaded or written. A later read that shows
+  // something newer was written by another page or device (C1).
+  let acctKnown = -Infinity;
+  let bootSettled = false;  // the first account read has been settled; resume() waits for it
+  let resumeGen = 0, resumeMark = null, resumeLen = 0, resumeTouched = false;
+  let hold = 0;             // while a backup of a game about to be replaced is being written, nothing saves
+  const startedAt = now();
 
   // Gates in front of the stores: the saver skips a store until its gate reports answered.
-  const localGate = { name: 'local', get answered() { return localOk && local?.answered === true; }, save: (o) => local.save(o) };
-  const accountGate = { name: 'claude', get answered() { return accountOpen && acct?.answered === true; }, save: (o) => acct.save(o) };
+  const localGate = { name: 'local', get answered() { return !hold && localOk && local?.answered === true; }, save: (o) => local.save(o) };
+  const accountGate = {
+    name: 'claude',
+    get answered() { return !hold && accountOpen && acct?.answered === true; },
+    async save(o) {
+      await acct.save(o);
+      if (Number.isFinite(acct.writtenAt)) acctKnown = Math.max(acctKnown, acct.writtenAt);
+    },
+  };
 
-  // Copy needs a code ready to hand when ClipboardItem is missing: writeText must run inside the
-  // tap, before an encode could finish. Elsewhere this store does nothing and costs nothing.
   const canItem = !!clipboard && typeof clipboard.write === 'function' && typeof Item === 'function' && typeof B === 'function';
-  let lastCode = null;
-  const keeper = { name: 'code', answered: true, save: async (o) => { if (!canItem) lastCode = await encodeSaveCode(o); } };
 
-  const saver = createSaver({ stores: [localGate, accountGate, keeper], snapshot: () => serialize(cur), now });
+  // R30: Copy has to call writeText inside the tap, which only works if the code already exists.
+  // So the Menu starts encoding when it opens (and keeps it fresh), and Copy uses it if ready.
+  let ready = null, readyAt = -Infinity, encoding = false;
+  function prepareCode() {
+    if (encoding || (ready !== null && now() - readyAt < BAL.autosaveMs)) return;
+    encoding = true;
+    const at = now();
+    encodeSaveCode(serialize(cur)).then((c) => { ready = c; readyAt = at; }, () => {}).finally(() => { encoding = false; });
+  }
+
+  const saver = createSaver({ stores: [localGate, accountGate], snapshot: () => serialize(cur), now });
   const flush = () => saver.flush().catch(() => {});
+
+  // The open game goes to the phone's backup slots before anything replaces it; true when stored
+  // (or when there is nothing worth keeping).
+  async function backupCurrent() {
+    const o = serialize(cur);
+    if (!hasProgress(o)) return true;
+    return writeBackup(storage, 'local', await encodeSaveCode(o).catch(() => null));
+  }
 
   function swap(g, at) {
     cur = g; curSavedAt = at;
@@ -128,7 +159,9 @@ export function createSession({
 
   const wait = (ms) => new Promise((res) => setTimer(res, ms));
 
-  async function settle(save) {
+  // ctx says how to judge this read: at boot against the open game's own save, on resume against
+  // what this page last wrote or loaded. isTouched: has the player changed the game since then.
+  async function settle(save, ctx = bootCtx) {
     // No save at all: the saver may now write the account.
     if (!isObj(save)) { accountOpen = true; return; }
     // An unloadable save is backed up whatever its age: an older savedAt must not let the saver
@@ -142,13 +175,24 @@ export function createSession({
       hooks.toast?.(`${r.reason.replace(/^Save/, 'Account save')} — ${kept ? 'kept a backup' : 'account saving paused'}`);
       return;
     }
-    // Older than the open game's: nothing to restore, the saver may now write the account.
-    if (!(curSavedAt === -Infinity || stamp(save) > curSavedAt)) { accountOpen = true; return; }
-    if (!touched) {
-      swap(r.game, stamp(save));
-      accountOpen = true;
-      hooks.toast?.('Progress restored from your account');
-      return;
+    // Not newer than what this page already has: nothing to restore, the saver may write.
+    if (!ctx.newer(save)) { acctKnown = Math.max(acctKnown, stamp(save)); accountOpen = true; return; }
+    if (!ctx.isTouched()) {
+      // The game being left may hold progress the account lacks (a stale page, or a phone save
+      // the account never saw); it is kept before the swap, never dropped silently.
+      hold++;
+      let kept;
+      try { kept = await backupCurrent(); } finally { hold--; }
+      // The player may have acted while the copy was being written; then it is their call.
+      if (!ctx.isTouched()) {
+        swap(r.game, stamp(save));
+        acctKnown = Math.max(acctKnown, stamp(save));
+        accountOpen = true;
+        hooks.toast?.('Progress restored from your account');
+        if (!kept) hooks.toast?.("Couldn't keep a backup of the replaced game");
+        flush();
+        return;
+      }
     }
     // Both sides have progress the other lacks. Copied aside first in case the choice is never
     // made: the phone keeps saving meanwhile, and next time its save would look newer.
@@ -158,13 +202,21 @@ export function createSession({
       // The game being replaced goes to the phone's backup slots first, so "Load account save"
       // can't lose what was built here. Swaps even if no copy could be stored: the player chose.
       async load() {
-        const kept = hasProgress(serialize(cur)) ? writeBackup(storage, 'local', await encodeSaveCode(serialize(cur)).catch(() => null)) : true;
-        swap(r.game, stamp(save)); accountOpen = true; flush();
+        const kept = await backupCurrent();
+        swap(r.game, stamp(save)); acctKnown = Math.max(acctKnown, stamp(save)); accountOpen = true; flush();
         if (!kept) hooks.toast?.("Couldn't keep a backup of the replaced game");
       },
-      keep() { accountOpen = true; flush(); },
+      keep() { acctKnown = Math.max(acctKnown, stamp(save)); accountOpen = true; flush(); },
     });
   }
+  const bootCtx = {
+    newer: (save) => curSavedAt === -Infinity || stamp(save) > curSavedAt,
+    isTouched: () => touched,
+  };
+  const resumeCtx = {
+    newer: (save) => stamp(save) > acctKnown,
+    isTouched: () => resumeTouched,
+  };
 
   // R21: account.load() directly, so `answered` is exactly what boot saw; until it answers, the
   // account doc is never written.
@@ -176,28 +228,77 @@ export function createSession({
     for (let attempt = 0; ; attempt++) {
       let save = null;
       try { save = await store.load(); } catch { save = null; }
-      if (store.answered === true) return settle(save);
+      if (store.answered === true) { await settle(save); bootSettled = true; return; }
       await wait(RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)]);
     }
   }
   const accountDone = account ? syncAccount(account).catch(() => {}) : Promise.resolve();
 
+  // C1: a page that was in the background may hold an old game while another page or device has
+  // moved the account on. On coming back, the account gate closes (so the first autosave can't
+  // write the old game over the newer save) and the account is read again before any write.
+  async function resume() {
+    if (!acct || !bootSettled) return; // no account, or boot's own read is still deciding
+    const mine = ++resumeGen;
+    accountOpen = false;
+    resumeMark = cur.undo.at(-1) ?? null; resumeLen = cur.undo.length; resumeTouched = false;
+    for (let attempt = 0; ; attempt++) {
+      let save = null;
+      try { save = await acct.load(); } catch { save = null; }
+      if (mine !== resumeGen) return; // a newer resume took over
+      if (acct.answered === true) return settle(save, resumeCtx);
+      await wait(RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)]);
+      if (mine !== resumeGen) return;
+    }
+  }
+
   return {
     get game() { return cur; },
     get touched() { return touched; },
     accountDone,
+    resume,
 
     // Every frame. Never awaited (ruling 7): a hung store must not stall the frame loop.
     frame() {
       if (cur.undo.length) touched = true;
+      // Any change to the undo stack since coming back (a new step, or Undo popping one) is the player acting.
+      if (cur.undo.length !== resumeLen || (cur.undo.at(-1) ?? null) !== resumeMark) resumeTouched = true;
       saver.maybeSave().catch(() => {});
     },
     flush,
 
-    newGame() {
-      touched = true;
+    // I1: what the Menu shows and when the warning chip appears. okAt/error come from the stores'
+    // own write results; the chip counts a save to either store as saved.
+    health() {
+      const t = now();
+      const stores = [{
+        key: 'phone', okAt: local?.health?.okAt ?? null,
+        error: localOk === false ? 'Saving paused' : local?.health?.error ?? null,
+      }];
+      if (account) {
+        stores.push({
+          key: 'account', okAt: acct?.health?.okAt ?? null,
+          error: !acct ? 'Not connected yet' : !accountOpen ? 'Paused until your account is checked' : acct.health?.error ?? null,
+        });
+      }
+      const newest = Math.max(startedAt, ...stores.map((x) => x.okAt ?? -Infinity));
+      return { now: t, stores, stale: t - newest >= STALE_MS };
+    },
+
+    // R30: the Menu calls this when it opens and as it stays open.
+    prepareCode,
+
+    // I4: the game being replaced is backed up first (nothing saves meanwhile); the swap itself
+    // is immediate. Resolves once the new game has been saved.
+    async newGame() {
+      const outgoing = hasProgress(serialize(cur)) ? encodeSaveCode(serialize(cur)).catch(() => null) : null;
+      touched = true; resumeTouched = true;
+      hold++;
       swap(freshGame(rand, cur), -Infinity);
-      flush(); // the player confirmed twice; the old factory shouldn't come back on the next open
+      let kept = true;
+      try { if (outgoing) kept = writeBackup(storage, 'local', await outgoing); } finally { hold--; }
+      if (!kept) hooks.toast?.("Couldn't keep a backup of the replaced game");
+      return flush(); // the player confirmed twice; the old factory shouldn't come back on the next open
     },
 
     // Rejects with decodeSaveCode's player-facing message for a bad paste; the game stays.
@@ -205,9 +306,13 @@ export function createSession({
       const obj = await decodeSaveCode(text);
       const r = tryLoad(obj);
       if (!r.ok) return { ok: false, reason: r.reason };
-      touched = true;
+      hold++;
+      let kept;
+      try { kept = await backupCurrent(); } finally { hold--; }
+      touched = true; resumeTouched = true;
       swap(r.game, stamp(obj));
-      flush();
+      if (!kept) hooks.toast?.("Couldn't keep a backup of the replaced game");
+      await flush();
       return { ok: true };
     },
 
@@ -216,13 +321,14 @@ export function createSession({
     backups: () => listBackups(storage),
 
     // Synchronous up to the clipboard call (ruling 17): iOS only allows the write inside the tap.
+    // Preference order (R30): writeText with the code the Menu already prepared, else a
+    // ClipboardItem holding a promise of the code, else the UI's select-by-hand sheet.
     copyCode() {
+      prepareCode();
+      if (ready !== null && clipboard && typeof clipboard.writeText === 'function') return clipboard.writeText(ready);
       const code = encodeSaveCode(serialize(cur));
-      code.then((c) => { lastCode = c; }, () => {});
       if (canItem) return clipboard.write([new Item({ 'text/plain': code.then((c) => new B([c], { type: 'text/plain' })) })]);
-      if (clipboard && typeof clipboard.writeText === 'function') {
-        return lastCode !== null ? clipboard.writeText(lastCode) : code.then((c) => clipboard.writeText(c));
-      }
+      if (clipboard && typeof clipboard.writeText === 'function') return code.then((c) => clipboard.writeText(c));
       return Promise.reject(new Error('No clipboard'));
     },
   };

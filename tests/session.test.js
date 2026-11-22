@@ -357,18 +357,24 @@ test('copy: ClipboardItem write starts inside the tap, with a promise of the cod
   assert.equal(obj.seed, s.game.seed);
 });
 
-test('copy without ClipboardItem: writeText with the latest code the saver made; no clipboard rejects', async () => {
+test('R30: Copy writes text synchronously once the Menu has prepared the code; ClipboardItem when not ready; none rejects', async () => {
   fakeStorage();
-  const texts = [];
-  const clipboard = { writeText: (t) => { texts.push(t); return Promise.resolve(); } };
-  const { s } = await start({ extra: { clipboard, ClipboardItem: undefined } });
-  await s.copyCode(); // nothing saved yet: it encodes, then writes
+  const texts = []; let items = null;
+  const clipboard = { writeText: (t) => { texts.push(t); return Promise.resolve(); }, write: (x) => { items = x; return Promise.resolve(); } };
+  class Item { constructor(o) { this.o = o; } }
+  const { s } = await start({ extra: { clipboard, ClipboardItem: Item, Blob } });
+  await s.copyCode(); // nothing prepared yet: the ClipboardItem path
+  assert.ok(items && texts.length === 0);
+  await drain(); // the encode that copyCode started has finished
+  s.prepareCode(); // (the Menu does this when it opens)
+  await drain();
+  const p = s.copyCode();
+  assert.equal(texts.length, 1, 'writeText was called synchronously inside the tap');
+  await p;
   assert.equal((await decodeSaveCode(texts[0])).seed, s.game.seed);
-  await s.flush();
-  const before = texts.length;
-  s.copyCode();
-  assert.equal(texts.length, before + 1, 'the kept code is written synchronously');
-  assert.equal((await decodeSaveCode(texts.at(-1))).seed, s.game.seed);
+  // Without ClipboardItem and nothing ready: it encodes, then writes; with no clipboard it rejects.
+  const { s: s2 } = await start({ extra: { clipboard: { writeText: clipboard.writeText }, ClipboardItem: undefined } });
+  texts.length = 0; await s2.copyCode(); assert.equal(texts.length, 1);
   const none = createSession({ game: s.game, savedAt: -Infinity, local: createLocalStore(), storage: ST, hooks: hooks().hooks, clipboard: undefined });
   await assert.rejects(none.copyCode());
 });
@@ -439,4 +445,139 @@ test('backups keep two slots, never overwrite a different code, never rewrite an
   await bootLocal({ local: createLocalStore(), storage: ST }); // same seed-3 code again
   assert.deepEqual(ST.log, [], 'an identical code is never written twice');
   assert.deepEqual(listBackups(ST).map((b) => b.key), [BACKUP_KEY, BACKUP_KEY_2]);
+});
+
+// ---- final review fixes
+
+// One account doc shared by every page: what a store loads is whatever the last save wrote.
+function sharedAccount(doc) {
+  const s = {
+    name: 'claude', answered: false, writtenAt: -Infinity, writes: [], health: { okAt: null, error: null }, hold: null,
+    async load() {
+      s.answered = false;
+      if (s.hold) await new Promise((r) => { s.release = r; });
+      s.answered = true;
+      return doc.save;
+    },
+    async save(o) { doc.save = o; s.writes.push(o); s.writtenAt = o.savedAt; },
+  };
+  return s;
+}
+const tierOf = (g) => g.tier;
+
+test('C1: A saves tier 2 and is backgrounded, B reaches tier 5; A resuming must not overwrite the account, and loads tier 5 (backing up its own game)', async () => {
+  fakeStorage();
+  const doc = { save: null };
+  const gA = factory(7); gA.tier = 2;
+  ST.setItem(SAVE_KEY, await encodeSaveCode(saveOf(gA, 500)));
+  const acct = sharedAccount(doc);
+  const { s, h } = await start({ account: Promise.resolve(acct) });
+  await s.accountDone;
+  clock = 1000; await s.flush(); // A: account now holds tier 2 at 1000
+  assert.equal(doc.save.tier, 2);
+  // B (another surface) restores, plays on and saves tier 5.
+  const gB = factory(7); gB.tier = 5; doc.save = saveOf(gB, 5000);
+  const writesBefore = acct.writes.length;
+  // A comes back; its account is re-read before anything may be written.
+  acct.hold = true;
+  const p = s.resume();
+  clock = 20000; s.frame(); await s.flush(); await drain();
+  assert.equal(acct.writes.length, writesBefore, 'no account write while the re-read is pending');
+  acct.hold = false; acct.release(); await p; await drain();
+  assert.equal(tierOf(s.game), 5, 'the newer save was loaded');
+  assert.ok(h.toasts.includes('Progress restored from your account'));
+  assert.equal(tierOf(await decodeSaveCode(ST.getItem(BACKUP_KEY))), 2, "A's own game was kept before the swap");
+  await s.flush();
+  assert.equal(doc.save.tier, 5, 'the account was never taken back to tier 2');
+  // B reopens: still tier 5.
+  assert.equal(acct.writes.at(-1).tier, 5);
+});
+
+test('C1: a page that built something since resuming is asked, not overwritten; an unchanged account just reopens the gate', async () => {
+  fakeStorage();
+  const doc = { save: null };
+  ST.setItem(SAVE_KEY, await encodeSaveCode(saveOf(factory(7), 500)));
+  const acct = sharedAccount(doc);
+  const { s, h } = await start({ account: Promise.resolve(acct) });
+  await s.accountDone; clock = 1000; await s.flush();
+  // Nothing new elsewhere: resume reads the account, finds nothing newer, and saving carries on.
+  await s.resume(); await s.flush();
+  assert.equal(h.swaps.length, 0); assert.equal(h.choices.length, 0);
+  assert.equal(acct.writes.at(-1).seed, 7);
+  // Newer elsewhere, and the player acts right after coming back.
+  const gB = factory(7); gB.tier = 6; doc.save = saveOf(gB, 9000);
+  acct.hold = true; const p = s.resume();
+  doAction(s.game, () => addEnt(s.game, 'belt', 50, 50, { dir: 1 })); s.frame();
+  acct.hold = false; acct.release(); await p; await drain();
+  assert.equal(h.choices.length, 1); assert.equal(h.choices[0].game.tier, 6);
+  assert.equal(s.game.tier, 2);
+  const n = acct.writes.length; await s.flush(); assert.equal(acct.writes.length, n, 'account untouched until they choose');
+});
+
+test('I4: New game, Load save code and Load this backup keep the game they replace', async () => {
+  fakeStorage();
+  ST.setItem(SAVE_KEY, await encodeSaveCode(saveOf(factory(7), 500)));
+  const { s } = await start({ rand: seq(0.1, 0.2, 0.3) });
+  await s.newGame();
+  assert.equal((await decodeSaveCode(ST.getItem(BACKUP_KEY))).seed, 7, 'New game backs up the old factory');
+  // The new world has no progress: loading a code over it keeps nothing worth a slot.
+  const code9 = await encodeSaveCode(saveOf(factory(9), 1));
+  await s.loadCode(code9);
+  assert.equal(s.game.seed, 9);
+  const code11 = await encodeSaveCode(saveOf(factory(11), 2));
+  await s.loadCode(code11);
+  assert.equal((await decodeSaveCode(ST.getItem(BACKUP_KEY))).seed, 9, 'Load code backs up the factory it replaces');
+  assert.equal((await decodeSaveCode(ST.getItem(BACKUP_KEY_2))).seed, 7);
+  assert.equal(s.game.seed, 11);
+});
+
+test('I1: stores record lastOk and the last error; a hung account write times out and frees the queue', async () => {
+  const { createClaudeStore, connectClaudeStore } = await import('../src/save/stores.js');
+  // local: a throwing setItem and missing storage both show up as errors, then recover.
+  fakeStorage({ failKeys: ['k'] });
+  let t = 100; const local = createLocalStore('k', () => t);
+  await local.save(saveOf(factory(1), 1));
+  assert.equal(local.health.okAt, null); assert.equal(local.health.error, 'Phone storage is full');
+  ST.setItem = (k, v) => ST.m.set(k, String(v)); t = 200;
+  await local.save(saveOf(factory(1), 2));
+  assert.deepEqual({ ...local.health }, { okAt: 200, error: null });
+  const real = ST; ST = null; await local.save(saveOf(factory(1), 3)); ST = real;
+  assert.equal(local.health.error, 'Phone storage is unavailable');
+  // account: set() that never resolves.
+  let calls = 0, hang = true; const sets = [];
+  const doc = { async set(d) { calls++; sets.push(d); if (hang) await new Promise(() => {}); }, async get() { return { exists: false }; } };
+  const claude = { use: async (n) => (n === 'db' ? { collection: () => ({ doc: () => doc }) } : { id: async () => 'u1' }) };
+  const store = await createClaudeStore(claude, 'steelreach', 1000, { now: () => t, writeTimeoutMs: 30 });
+  await store.save(saveOf(factory(1), 5));
+  assert.match(store.health.error, /timed out/);
+  hang = false; t = 300;
+  await store.save(saveOf(factory(1), 6)); // the queue is free again
+  assert.equal(calls, 2); assert.equal(store.health.okAt, 300); assert.equal(store.health.error, null);
+  assert.equal(store.writtenAt, 6);
+  // connect retries with backoff until the runtime answers, and gives up at once with no runtime.
+  let tries = 0; const waits = [];
+  const flaky = { use: async (n) => { if (n === 'db' && ++tries < 3) return null; return n === 'db' ? { collection: () => ({ doc: () => doc }) } : { id: async () => 'u1' }; } };
+  const got = await connectClaudeStore(flaky, { wait: async (ms) => { waits.push(ms); }, timeoutMs: 1000 });
+  assert.ok(got); assert.deepEqual(waits, [5000, 15000]);
+  assert.equal(await connectClaudeStore(undefined, { wait: async () => assert.fail('no retry') }), null);
+});
+
+test('I1: session.health() reports each store and goes stale after 30 s with no save (the chip)', async () => {
+  fakeStorage();
+  let t = 1000; const clk = () => t;
+  const local = createLocalStore('steelreach', clk);
+  const acct = sharedAccount({ save: null });
+  const b = await bootLocal({ local, storage: ST });
+  const s = createSession({ game: b.game, savedAt: b.savedAt, local, localOk: b.localOk, account: Promise.resolve(acct), storage: ST, hooks: hooks().hooks, now: clk });
+  await s.accountDone;
+  let hl = s.health();
+  assert.deepEqual(hl.stores.map((x) => x.key), ['phone', 'account']); assert.equal(hl.stale, false);
+  t = 2000; await s.flush();
+  hl = s.health();
+  assert.equal(hl.stores[0].okAt, 2000); assert.equal(hl.stores[0].error, null);
+  t = 2000 + 29000; assert.equal(s.health().stale, false);
+  t = 2000 + 30000; assert.equal(s.health().stale, true);
+  // an error is surfaced as text
+  ST.setItem = () => { throw new Error('QuotaExceededError'); };
+  await s.flush(); assert.equal(s.health().stores[0].error, 'Phone storage is full');
 });

@@ -6,7 +6,7 @@ import { CENTER } from './config.js';
 import { tick } from './sim/tick.js';
 import { createLoop } from './loop.js';
 import { bootLocal, createSession } from './session.js';
-import { createLocalStore, createClaudeStore } from './save/stores.js';
+import { createLocalStore, connectClaudeStore } from './save/stores.js';
 import { createCamera, clampCam, zoomAt } from './render/camera.js';
 import { drawFrame, readTheme, watchTheme } from './render/draw.js';
 import { createTools } from './input/tools.js';
@@ -22,9 +22,9 @@ const DPR_MAX = 2;
 const storage = (() => { try { return globalThis.localStorage ?? null; } catch { return null; } })();
 
 async function boot() {
-  // Started first and never awaited here: use() can take ~10 s to give up, and the game must open
-  // straight away on the phone's own save.
-  const account = __TARGET__ === 'artifact' ? createClaudeStore().catch(() => null) : null;
+  // Started first and never awaited here: use() can take ~10 s to give up (and is retried with
+  // backoff), and the game must open straight away on the phone's own save.
+  const account = __TARGET__ === 'artifact' ? connectClaudeStore().catch(() => null) : null;
   const local = createLocalStore();
   const start = await bootLocal({ local, storage });
 
@@ -57,6 +57,8 @@ async function boot() {
     // Plain text copy for a backup's code (inside a tap); rejects so the UI leaves it to select by hand.
     copyText: (t) => (navigator.clipboard?.writeText ? navigator.clipboard.writeText(t) : Promise.reject(new Error('No clipboard'))),
     listBackups: () => session.backups(),
+    saveHealth: () => session?.health() ?? null,
+    prepareSaveCode: () => session?.prepareCode(),
     loadSaveCode: (text) => session.loadCode(text),
     setSfx: (on) => sfx.setEnabled(on),
     perf: () => ({ fps: loop.fps, tickMs: loop.tickMs, buildings: session.game.ents.size - 1, items: countItems(session.game) }),
@@ -181,9 +183,15 @@ async function boot() {
 
   // Hidden: save now and stop. Restarting resets the loop's clock, so nothing is caught up.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { session.flush(); loop.stop(); } else loop.start();
+    if (document.hidden) { session.flush(); loop.stop(); return; }
+    // Before the first frame, so no autosave can write this page's old game over a newer account
+    // save made elsewhere while it was in the background (C1).
+    session.resume();
+    loop.start();
   });
   addEventListener('pagehide', () => session.flush());
+  // Restored from the back/forward cache without a visibilitychange: same stale-page risk.
+  addEventListener('pageshow', (e) => { if (e.persisted) session.resume(); });
   if (!document.hidden) loop.start();
 
   if (location.hash === '#debug') {

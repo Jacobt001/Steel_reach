@@ -25,8 +25,9 @@ function withTimeout(p, ms) {
 // Runs fn one call at a time and keeps only the newest waiting argument, so a slow write is never
 // overlapped by a newer one (which could land first and then be overwritten by the older) and a
 // backlog never builds. The promise settles once this argument or a newer one has been handled.
-// Errors are swallowed: callers rely on saving never throwing.
-function latestOnly(fn) {
+// Errors never reach the caller (saving must not throw into the frame loop); they are recorded
+// on `health` instead, so the Menu and the warning chip can tell the player saving has stopped.
+function latestOnly(fn, health = null, now = Date.now) {
   let busy = false, has = false, next, done;
   return (arg) => {
     next = arg; has = true;
@@ -38,7 +39,12 @@ function latestOnly(fn) {
         try {
           while (has) {
             const a = next; has = false; next = undefined;
-            try { await fn(a); } catch { /* reported by the store itself, if at all */ }
+            try {
+              await fn(a);
+              if (health) { health.okAt = now(); health.error = null; }
+            } catch (err) {
+              if (health) health.error = describeError(err);
+            }
           }
         } finally { busy = false; }
       })();
@@ -47,13 +53,35 @@ function latestOnly(fn) {
   };
 }
 
-export function createLocalStore(key = 'steelreach') {
+// Short and plain enough for the Menu line.
+function describeError(err) {
+  const m = typeof err === 'string' ? err : err?.message;
+  if (!m) return 'Save failed';
+  return /quota/i.test(m) ? 'Phone storage is full' : String(m).slice(0, 80);
+}
+
+// A write that outlives ms rejects, so a hung doc.set frees the queue instead of blocking every
+// later save for the rest of the session.
+async function limited(p, ms, what) {
+  const r = await withTimeout(Promise.resolve(p).then(() => ({ ok: true })), ms);
+  if (!r) throw new Error(`${what} timed out`);
+}
+
+export function createLocalStore(key = 'steelreach', now = Date.now) {
   // Even reading window.localStorage throws in some sandboxed frames and private modes.
   const storage = () => { try { return globalThis.localStorage ?? null; } catch { return null; } };
-  const write = latestOnly(async (obj) => { storage()?.setItem(key, await encodeSaveCode(obj)); });
+  const health = { okAt: null, error: null };
+  const write = latestOnly(async (obj) => {
+    const code = await encodeSaveCode(obj);
+    const st = storage();
+    // Not silently skipped: with no storage nothing is saved, and the player should hear it.
+    if (!st) throw new Error('Phone storage is unavailable');
+    st.setItem(key, code);
+  }, health, now);
   const store = {
     name: 'local',
     answered: false,
+    health,
     async load() {
       let code = null;
       // localStorage replies synchronously. Missing or throwing counts as an empty store that has
@@ -81,7 +109,7 @@ async function setDoc(doc, data) {
   }
 }
 
-export async function createClaudeStore(claude = globalThis.claude, docName = 'steelreach', timeoutMs = 10000) {
+export async function createClaudeStore(claude = globalThis.claude, docName = 'steelreach', timeoutMs = 10000, { now = Date.now, writeTimeoutMs = 15000 } = {}) {
   let col, main;
   try {
     // use() takes ~10 s to give up when no viewer answers, so setup shares the load time limit.
@@ -127,22 +155,33 @@ export async function createClaudeStore(claude = globalThis.claude, docName = 's
     return code;
   }
 
-  const write = latestOnly(async (obj) => {
+  const health = { okAt: null, error: null };
+  const write = latestOnly((obj) => limited((async () => {
     const code = await encodeSaveCode(obj);
     const savedAt = Number.isFinite(obj?.savedAt) ? obj.savedAt : Date.now();
-    if (code.length <= PART) return setDoc(main, { code, savedAt });
-    const parts = [];
-    for (let i = 0; i < code.length; i += PART) parts.push(code.slice(i, i + PART));
-    // Parts first and the main doc last, one write at a time: until the main doc lands, a load
-    // still reads the old part count and savedAt, so a cut-off save is rejected, not spliced.
-    for (let i = 1; i < parts.length; i++) await setDoc(partDoc(i), { code: parts[i], savedAt });
-    await setDoc(main, { savedAt, parts: parts.length, code: parts[0] });
-  });
+    if (code.length <= PART) await setDoc(main, { code, savedAt });
+    else {
+      const parts = [];
+      for (let i = 0; i < code.length; i += PART) parts.push(code.slice(i, i + PART));
+      // Parts first and the main doc last, one write at a time: until the main doc lands, a load
+      // still reads the old part count and savedAt, so a cut-off save is rejected, not spliced.
+      for (let i = 1; i < parts.length; i++) await setDoc(partDoc(i), { code: parts[i], savedAt });
+      await setDoc(main, { savedAt, parts: parts.length, code: parts[0] });
+    }
+    // The newest savedAt the account is known to hold from this page (session.js compares it
+    // with what a later read finds, to tell another device's save from our own).
+    store.writtenAt = savedAt;
+  })(), writeTimeoutMs, 'Account save'), health, now);
 
   const store = {
     name: 'claude',
     answered: false,
+    writtenAt: -Infinity,
+    health,
     async load() {
+      // Each load must earn `answered` again: a later re-read that fails or times out (the page
+      // coming back from the background) has to close the gate, not ride on the first reply.
+      store.answered = false;
       try {
         // Boxed so a timeout (null) can't be mistaken for a reply of "no save".
         const got = await withTimeout(readCode().then((code) => ({ code })), timeoutMs);
@@ -156,6 +195,21 @@ export async function createClaudeStore(claude = globalThis.claude, docName = 's
     save: (obj) => write(obj),
   };
   return store;
+}
+
+// The account runtime can be slow to answer or absent for a while (use() gives up after ~10 s),
+// and one failure used to mean no account saving for the whole session. This keeps trying with
+// backoff for as long as a runtime exists; with none (Home Screen build, plain browser) it
+// resolves null at once. Never rejects.
+export async function connectClaudeStore(claude = globalThis.claude, opts = {}) {
+  const { delays = [5000, 15000, 30000, 60000], wait = (ms) => new Promise((res) => setTimeout(res, ms)), ...rest } = opts;
+  for (let attempt = 0; ; attempt++) {
+    if (!claude || typeof claude.use !== 'function') return null;
+    let store = null;
+    try { store = await createClaudeStore(claude, undefined, rest.timeoutMs, rest); } catch { store = null; }
+    if (store) return store;
+    await wait(delays[Math.min(attempt, delays.length - 1)]);
+  }
 }
 
 const stamp = (o) => (Number.isFinite(o.savedAt) ? o.savedAt : -Infinity);
