@@ -39,3 +39,17 @@ test('machine with two output belts alternates', () => {
   let a = 0, b = 0; for (let t = 0; t < 400; t++) { tick(g); a += drain(g,12,10).length; b += drain(g,12,11).length; }
   assert.ok(a > 5 && Math.abs(a - b) <= 1, `${a} ${b}`);
 });
+test('I5: a furnace fed two ores from two belts marks the waiting belt amber "Furnace is busy with <Item>" after 100 ticks', async () => {
+  const { BUSY, STALL } = await import('../src/sim/offer.js');
+  const g = testGame(); place(g,'belt',9,10,{dir:1}); place(g,'belt',9,11,{dir:1}); const f = place(g,'furnace',10,10); place(g,'belt',12,10,{dir:1});
+  for (let t = 0; t < 99; t++) { feed(g,9,10,['iron_ore']); feed(g,9,11,['copper_ore']); tick(g); drain(g,12,10); }
+  const b = (await import('../src/game/state.js')).entAt(g,9,11), a = (await import('../src/game/state.js')).entAt(g,9,10);
+  assert.equal(b.blockedKind, null, 'not before the 100-tick delay');
+  for (let t = 0; t < 40; t++) { feed(g,9,10,['iron_ore']); feed(g,9,11,['copper_ore']); tick(g); drain(g,12,10); }
+  assert.equal(b.blockedKind, 'stall'); assert.equal(b.blocked, 'Furnace is busy with Iron ore');
+  assert.equal(a.blockedKind, null);
+  // Non-smeltable stays red NEVER; non-deadEnd modes stay BUSY.
+  const { offer } = await import('../src/sim/offer.js');
+  assert.equal(offer(g,f,'copper_ore',1,0,'handoff'), BUSY);
+  assert.equal(offer(g,f,'copper_ore',1,0,'deadEnd'), STALL);
+});

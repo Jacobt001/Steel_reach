@@ -1,5 +1,5 @@
 // Single-lane belts: items hold a position 0..1 along the tile, front item is index 0.
-import { BAL, TPS, DX, DY, ITEMS, BUILDINGS } from '../config.js';
+import { BAL, TPS, DX, DY, ITEMS, BUILDINGS, RECIPES } from '../config.js';
 import { entAt } from '../game/state.js';
 import { offer, OK, BUSY, NEVER, STALL } from './offer.js';
 import { pullPassBy, isPuller } from './machines.js';
@@ -50,7 +50,12 @@ export function markLane(e, f, r, t, item) {
   if (r === STALL) {
     const run = e[f.run] = (e[f.run] ?? 0) + 1;
     if (run >= BAL.stallShowTicks) {
-      e[f.text] = `${nameOf(t)} is full of ${ITEMS[item].name}`; e[f.kind] = 'stall';
+      // A furnace locked onto another recipe refuses this ore for a different reason than being full.
+      const r0 = t.type === 'furnace' && t.recipe && RECIPES[t.recipe];
+      e[f.text] = r0 && r0.in[item] === undefined
+        ? `${nameOf(t)} is busy with ${ITEMS[Object.keys(r0.in)[0]].name}`
+        : `${nameOf(t)} is full of ${ITEMS[item].name}`;
+      e[f.kind] = 'stall';
       return;
     }
   } else if (e[f.run] !== 0) e[f.run] = 0;

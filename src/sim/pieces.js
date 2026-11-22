@@ -95,6 +95,18 @@ export function acceptSplitter(game, e, item, moveDir) {
   return OK;
 }
 
+// Ruling R29: a splitter output counts only where the neighbour takes items travelling in
+// direction d. Offering to every non-facing belt would leak a trunk's items into a parallel
+// belt beside it (belts accept side entry). Machines and the Hub refuse what they can't use.
+export function takesMoving(ent, d) {
+  switch (ent.type) {
+    case 'belt': case 'tunnel_in': case 'splitter': return ent.dir === d;
+    case 'merger': return d !== (ent.dir + 2) % 4;
+    case 'bridge': return ent.dirH === d || ent.dirV === d;
+    default: return true;
+  }
+}
+
 export function stepSplitter(game, e, v) {
   if (!e.hold) return markLane(e, LANE, OK);
   // Left, front, right, rotated to start at rr so refusals just fall through to the next output.
@@ -103,7 +115,7 @@ export function stepSplitter(game, e, v) {
   for (let k = 0; k < 3; k++) {
     const i = (e.rr + k) % 3, d = outs[i];
     const ent = entAt(game, e.x + DX[d], e.y + DY[d]);
-    if (ent) targets.push({ ent, dir: d, done: () => { e.rr = (i + 1) % 3; } });
+    if (ent && takesMoving(ent, d)) targets.push({ ent, dir: d, done: () => { e.rr = (i + 1) % 3; } });
   }
   stepHold(game, e, v, targets);
 }

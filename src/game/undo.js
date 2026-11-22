@@ -43,14 +43,25 @@ export function actionGroup(game) {
 // Plays one record backwards. Callers keep game.cur null, so the reverts are not recorded as a
 // new action.
 function revert(game, rec) {
+  // Items on an auto-bridge's lanes, by tile: when the bridge goes, the belt that was there
+  // comes back with the crossed line's items instead of dropping them.
+  const carried = new Map();
   for (let i = rec.length - 1; i >= 0; i--) {
     const e = rec[i];
     if (e.op === 'add') {
       const ent = game.ents.get(e.id);
-      if (ent) removeEnt(game, ent);
+      if (ent) {
+        if (ent.type === 'bridge') carried.set(`${ent.x},${ent.y}`, ent);
+        removeEnt(game, ent);
+      }
+    } else if (e.op === 'dir') {
+      const ent = game.ents.get(e.id);
+      if (ent) { Object.assign(ent, e.before); game.topoDirty = true; }
     } else {
       const { id, type, x, y, ...props } = e.snap;
-      addEnt(game, type, x, y, { ...props, id });
+      const back = addEnt(game, type, x, y, { ...props, id });
+      const br = type === 'belt' ? carried.get(`${x},${y}`) : null;
+      if (br) back.items.push(...(back.dir === br.dirH ? br.laneH : back.dir === br.dirV ? br.laneV : []));
     }
   }
 }

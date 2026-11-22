@@ -43,3 +43,24 @@ test('undo of a bridge erase restores id, dirH/dirV and footprint', () => {
   assert.ok(undo(g)); const r = entAt(g, 6, 6);
   assert.equal(r.id, id); assert.equal(r.dirH, 3); assert.equal(r.dirV, 2); assert.equal(r.h, 1); assert.equal(r.w, 1);
 });
+import { placeBeltPath } from '../src/game/place.js';
+test('I2: undo of belts re-pointed by drawing backwards restores every direction and removes nothing else', () => {
+  const g = testGame(); const earlier = place(g, 'belt', 0, 0, {dir:1});
+  doAction(g, () => { for (let x = 5; x < 13; x++) place(g, 'belt', x, 5, {dir:1}); });
+  const path = []; for (let x = 12; x >= 5; x--) path.push([x, 5]);
+  placeBeltPath(g, path, path.map(() => 3));
+  for (let x = 5; x < 13; x++) assert.equal(entAt(g, x, 5).dir, 3);
+  assert.ok(undo(g));
+  for (let x = 5; x < 13; x++) assert.equal(entAt(g, x, 5).dir, 1);
+  assert.equal(entAt(g, 0, 0), earlier); assert.equal(g.topoDirty, true);
+});
+test('I2: undoing an auto-bridge restores the crossed belt with its items, and a re-pointed bridge lane', () => {
+  const g = testGame(); const old = place(g, 'belt', 5, 5, {dir:2}); old.items.push({item:'gear', pos:0.5});
+  const r = placeBeltPath(g, [[4,5],[5,5],[6,5]], [1,1,1]); assert.equal(r.bridges, 1);
+  const b = entAt(g, 5, 5); assert.equal(b.type, 'bridge');
+  assert.ok(undo(g)); const back = entAt(g, 5, 5);
+  assert.equal(back.type, 'belt'); assert.equal(back.dir, 2); assert.deepEqual(back.items, [{item:'gear', pos:0.5}]);
+  const br = place(g, 'bridge', 20, 20, {dirH:1, dirV:2});
+  placeBeltPath(g, [[19,20],[20,20],[21,20]], [3,3,3]); assert.equal(br.dirH, 3);
+  assert.ok(undo(g)); assert.equal(entAt(g, 20, 20).dirH, 1);
+});

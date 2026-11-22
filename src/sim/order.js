@@ -1,6 +1,7 @@
 // Downstream-first processing order so a full line frees up front-to-back in one tick.
 import { DX, DY } from '../config.js';
 import { entAt } from '../game/state.js';
+import { takesMoving } from './pieces.js';
 
 // Entities a conveyor hands items to. 
 export function nextOf(game, node) {
@@ -20,7 +21,7 @@ export function nextOf(game, node) {
   }
   if (node.type === 'splitter') {
     const out = [];
-    for (const d of [(node.dir + 3) % 4, node.dir, (node.dir + 1) % 4]) { const t = entAt(game, node.x + DX[d], node.y + DY[d]); if (t) out.push(t); }
+    for (const d of [(node.dir + 3) % 4, node.dir, (node.dir + 1) % 4]) { const t = entAt(game, node.x + DX[d], node.y + DY[d]); if (t && takesMoving(t, d)) out.push(t); }
     return out;
   }
   if (node.type === 'merger') {

@@ -112,10 +112,15 @@ export function acceptMachine(game, m, item, moveDir, pos, mode) {
     const r = m.recipe && RECIPES[m.recipe];
     if (!r || r.in[item] === undefined) {
       if (m.type !== 'furnace' || furnaceRecipeFor(game, item) === null) return NEVER;
-      // A furnace locked onto one ore reports BUSY for another smeltable ore so no false
-      // "can't use" marker shows; it will switch once it drains. A part batch (1 of 2 stone)
-      // never drains by itself, so then the belt must show why it is stuck.
-      return r && partBatch(m, r) ? NEVER : BUSY;
+      // A furnace locked onto one ore never says "can't use" for another smeltable ore; it will
+      // switch once it drains. A part batch (1 of 2 stone) never drains by itself, so then the
+      // belt must show why it is stuck.
+      if (r && partBatch(m, r)) return NEVER;
+      // A belt of the other ore waits for the furnace to drain, which never happens while its
+      // own ore keeps arriving; on a dead-end belt that is a STALL so the lane gets an amber
+      // "Furnace is busy with <Item>" marker after the usual delay (markLane words it).
+      // Hand-offs and pass-by just stay BUSY: they have no lane to mark.
+      return mode === 'deadEnd' ? STALL : BUSY;
     }
   }
   const r = RECIPES[m.recipe];

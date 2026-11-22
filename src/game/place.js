@@ -116,9 +116,16 @@ export function placeBeltPath(game, path, dirs) {
           // The old belt's items keep their lane so nothing on the crossed line is lost.
           (old.dir === b.dirH ? b.laneH : b.laneV).push(...old.items);
           res.bridges++; res.placed++;
-        } else { ent.dir = d; game.topoDirty = true; res.placed++; }
+        } else {
+          // Re-pointing is an edit Undo must be able to take back, or it would remove some
+          // unrelated earlier belt instead and leave the reversal in place.
+          if (ent.dir !== d) game.cur?.push({ op: 'dir', id: ent.id, before: { dir: ent.dir } });
+          ent.dir = d; game.topoDirty = true; res.placed++;
+        }
       } else if (ent.type === 'bridge') {
-        if (d % 2 === 1) ent.dirH = d; else ent.dirV = d;
+        const f = d % 2 === 1 ? 'dirH' : 'dirV';
+        if (ent[f] !== d) game.cur?.push({ op: 'dir', id: ent.id, before: { [f]: ent[f] } });
+        ent[f] = d;
         game.topoDirty = true; res.placed++;
       } else res.skipped.push([x, y]);
     });

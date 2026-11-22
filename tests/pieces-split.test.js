@@ -33,3 +33,11 @@ test('storage refuses handoff and passBy, outputPorts drops erased neighbours', 
   const bt = outputPorts(g,s)[0].node; erase(g, bt.x, bt.y);
   assert.equal(outputPorts(g,s).length, 0); tick(g); assert.equal(outputPorts(g,s).length, 0);
 });
+test('I7: a trunk splitter leaks nothing into a parallel belt; side outputs into belts pointing away still work', () => {
+  const g = testGame(); place(g,'belt',9,10,{dir:1}); place(g,'splitter',10,10,{dir:1}); place(g,'belt',11,10,{dir:1});
+  place(g,'belt',10,9,{dir:1}); // parallel trunk beside the splitter: faces east, not away
+  place(g,'belt',10,11,{dir:2}); // points away (south): a real side output
+  let par = 0, front = 0, down = 0;
+  for (let t = 0; t < 1500; t++) { feed(g,9,10,['gear']); tick(g); par += drain(g,10,9).length; front += drain(g,11,10).length; down += drain(g,10,11).length; }
+  assert.equal(par, 0); assert.ok(front > 100 && Math.abs(front - down) <= 2, `${front} ${down}`);
+});
