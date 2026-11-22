@@ -1,6 +1,10 @@
 // Where saves live: the phone's localStorage, and inside Claude the account's per-user doc.
 // Every store answers null or does nothing rather than throw: a store that is missing, slow or
 // refusing must never block loading or stop the other store from saving.
+// load() alone can't tell "no save there" from "couldn't read it" (both are null), so each store
+// also keeps `answered` (ruling R21): true once a load got a real reply from the backing store,
+// "no save" included, never for a timeout or an error. The saver only writes answered stores, so
+// a newer account save that boot couldn't read is never overwritten by an older phone mirror.
 import { encodeSaveCode, decodeSaveCode } from './code.js';
 import { BAL } from '../config.js';
 
@@ -47,16 +51,21 @@ export function createLocalStore(key = 'steelreach') {
   // Even reading window.localStorage throws in some sandboxed frames and private modes.
   const storage = () => { try { return globalThis.localStorage ?? null; } catch { return null; } };
   const write = latestOnly(async (obj) => { storage()?.setItem(key, await encodeSaveCode(obj)); });
-  return {
+  const store = {
     name: 'local',
+    answered: false,
     async load() {
-      try {
-        const code = storage()?.getItem(key);
-        return code ? await decodeSaveCode(code) : null;
-      } catch { return null; }
+      let code = null;
+      // localStorage replies synchronously. Missing or throwing counts as an empty store that has
+      // answered: there is nothing in it a save could overwrite, and the mirror must keep saving.
+      try { code = storage()?.getItem(key) ?? null; } catch { /* unavailable: empty */ }
+      store.answered = true;
+      if (!code) return null;
+      try { return await decodeSaveCode(code); } catch { return null; }
     },
     save: (obj) => write(obj),
   };
+  return store;
 }
 
 // Ruling R17: a doc may hold 256 KiB, so codes past 200,000 chars are split across docs.
@@ -94,7 +103,10 @@ export async function createClaudeStore(claude = globalThis.claude, docName = 's
 
   const partDoc = (i) => col.doc(`${docName}-p${i}`);
 
-  async function read() {
+  // The doc's code, or null when it holds no usable save. A get() that fails rejects instead, so
+  // load() can tell a reply from "not read". A doc that exists but is unusable (bad shape, a
+  // cut-off split save) is still a reply: the next save may overwrite it, which repairs it.
+  async function readCode() {
     const snap = await main.get();
     if (!snap?.exists) return null;
     const d = snap.data();
@@ -112,7 +124,7 @@ export async function createClaudeStore(claude = globalThis.claude, docName = 's
         code += p.code;
       }
     }
-    return decodeSaveCode(code);
+    return code;
   }
 
   const write = latestOnly(async (obj) => {
@@ -127,13 +139,23 @@ export async function createClaudeStore(claude = globalThis.claude, docName = 's
     await setDoc(main, { savedAt, parts: parts.length, code: parts[0] });
   });
 
-  return {
+  const store = {
     name: 'claude',
+    answered: false,
     async load() {
-      try { return await withTimeout(read(), timeoutMs); } catch { return null; }
+      try {
+        // Boxed so a timeout (null) can't be mistaken for a reply of "no save".
+        const got = await withTimeout(readCode().then((code) => ({ code })), timeoutMs);
+        if (!got) return null;
+        // Set only here: a reply that lands after the timeout was never seen by the caller, so
+        // it must not let the saver write over a save the caller didn't load.
+        store.answered = true;
+        return got.code === null ? null : await decodeSaveCode(got.code).catch(() => null);
+      } catch { return null; } // refused (permission prompt, offline): not a reply
     },
     save: (obj) => write(obj),
   };
+  return store;
 }
 
 const stamp = (o) => (Number.isFinite(o.savedAt) ? o.savedAt : -Infinity);
@@ -151,9 +173,10 @@ export async function loadBest(stores, timeoutMs = 10000) {
 const IDLE = Promise.resolve();
 
 export function createSaver({ stores, snapshot, intervalMs = BAL.autosaveMs, now = Date.now }) {
-  // One write queue per store, made on first use so a store added to the array later (the
-  // account store resolves after boot) is picked up. A store whose write hangs only holds up
-  // itself; the phone mirror keeps saving.
+  // One write queue per store, made on first use. A store is written only once one of its loads
+  // has answered (R21), checked on every save, so a store whose load timed out or was refused is
+  // skipped until a later load (a retry by boot) answers; never written blind over a save nobody
+  // read. A store whose write hangs only holds up itself; the phone mirror keeps saving.
   const queues = new Map();
   const queueOf = (s) => {
     let q = queues.get(s);
@@ -166,7 +189,7 @@ export function createSaver({ stores, snapshot, intervalMs = BAL.autosaveMs, now
     last = now();
     const obj = snapshot();
     obj.savedAt = last;
-    await Promise.all(stores.filter(Boolean).map((s) => queueOf(s)(obj)));
+    await Promise.all(stores.filter((s) => s?.answered === true).map((s) => queueOf(s)(obj)));
   };
   return {
     // Called every frame, so the not-due path is one clock read and a shared resolved promise.

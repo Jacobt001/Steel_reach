@@ -272,7 +272,7 @@ test('loadBest takes the newest save, ignores broken answers, and treats timeout
 });
 
 test('saver: due-based autosave, immediate flush, savedAt from now()', async () => {
-  const saved = [], store = { save: async (o) => { saved.push(o); } }; let t = 1000;
+  const saved = [], store = { answered: true, save: async (o) => { saved.push(o); } }; let t = 1000;
   const saver = createSaver({ stores: [store], snapshot: () => ({ v: 1 }), now: () => t });
   assert.equal(saver.maybeSave(), saver.maybeSave(), 'not-due path allocates nothing');
   t = 10999; await saver.maybeSave(); assert.equal(saved.length, 0);
@@ -285,8 +285,8 @@ test('saver: due-based autosave, immediate flush, savedAt from now()', async () 
 
 test('saver: writes to a store never overlap, only the latest waits, and a hung store does not block the others', async () => {
   let k = 0, active = 0, max = 0; const local = [], hung = [];
-  const slow = { save: async (o) => { active++; max = Math.max(max, active); await new Promise(r => setTimeout(r, 20)); local.push(o.n); active--; } };
-  const stuck = { save: (o) => { hung.push(o.n); return new Promise(() => {}); } };
+  const slow = { answered: true, save: async (o) => { active++; max = Math.max(max, active); await new Promise(r => setTimeout(r, 20)); local.push(o.n); active--; } };
+  const stuck = { answered: true, save: (o) => { hung.push(o.n); return new Promise(() => {}); } };
   const saver = createSaver({ stores: [stuck, slow], snapshot: () => ({ v: 1, n: k++ }), intervalMs: 10, now: () => 0 });
   saver.flush(); saver.flush(); saver.flush();
   await waitFor(() => local.length === 2);
@@ -296,7 +296,50 @@ test('saver: writes to a store never overlap, only the latest waits, and a hung 
 
 test('saver: a snapshot that throws rejects the promise, never the frame loop, and saving carries on', async () => {
   const saved = []; let fail = true, t = 0;
-  const saver = createSaver({ stores: [{ save: async (o) => { saved.push(o); } }], snapshot: () => { if (fail) throw new Error('boom'); return { v: 1 }; }, intervalMs: 10, now: () => t });
+  const saver = createSaver({ stores: [{ answered: true, save: async (o) => { saved.push(o); } }], snapshot: () => { if (fail) throw new Error('boom'); return { v: 1 }; }, intervalMs: 10, now: () => t });
   t = 10; const p = saver.maybeSave(); assert.ok(p instanceof Promise); await assert.rejects(p, /boom/);
   fail = false; t = 20; await saver.maybeSave(); assert.equal(saved.length, 1);
+});
+
+// R21: a store is written only after one of its loads really answered, so an account save that
+// boot could not read (slow, refused) is never overwritten by an older phone mirror.
+test('R21: a slow account store holding a newer save is never written by the saver until its load answers', async () => {
+  const code = await encodeSaveCode({ v: 1, savedAt: 500 }), late = []; let slow = true;
+  const snap = (path) => ({ id: path, exists: true, data: () => ({ code, savedAt: 500 }) });
+  const f = fakeClaude({ get: (path) => (slow ? new Promise(r => late.push(() => r(snap(path)))) : Promise.resolve(snap(path))) });
+  await withLocalStorage({ value: memStorage() }, async () => {
+    const local = createLocalStore(); await local.save({ v: 1, savedAt: 100 });
+    const account = await createClaudeStore(f.claude, 'steelreach', 30);
+    assert.equal(local.answered, false); assert.equal(account.answered, false);
+    assert.equal((await loadBest([local, account], 30)).savedAt, 100, 'boot only sees the older mirror');
+    assert.equal(local.answered, true); assert.equal(account.answered, false);
+    let t = 0; const saver = createSaver({ stores: [local, account], snapshot: () => ({ v: 1 }), intervalMs: 10, now: () => t });
+    await saver.flush(); t = 10; await saver.maybeSave();
+    late.forEach(r => r()); await new Promise(r => setTimeout(r, 10));
+    assert.equal(account.answered, false, 'an answer that arrives after load gave up was never seen by boot');
+    t = 20; await saver.maybeSave();
+    assert.equal(f.log.length, 0, 'the newer account save was never overwritten');
+    assert.equal((await local.load()).savedAt, 20, 'the phone mirror kept saving');
+    slow = false; assert.equal((await account.load()).savedAt, 500); assert.equal(account.answered, true);
+    t = 30; await saver.maybeSave(); assert.equal(f.log.length, 1, 'written once a load has answered');
+  });
+});
+
+test('R21: a store whose load rejected is never written, nor one that never says it answered', async () => {
+  const f = fakeClaude({ get: async () => { throw { code: 'not_granted', message: 'prompt dismissed' }; } });
+  const st = await createClaudeStore(f.claude); assert.equal(await st.load(), null); assert.equal(st.answered, false);
+  const quiet = []; let t = 0;
+  const saver = createSaver({ stores: [st, { save: async (o) => { quiet.push(o); } }], snapshot: () => ({ v: 1 }), intervalMs: 10, now: () => t });
+  await saver.flush(); t = 10; await saver.maybeSave(); t = 20; await saver.maybeSave();
+  assert.equal(f.log.length, 0); assert.deepEqual(quiet, []);
+});
+
+test('R21: a store whose load answered exists:false is written; a bad code or missing localStorage is an answer too', async () => {
+  const f = fakeClaude(), st = await createClaudeStore(f.claude);
+  assert.equal(st.answered, false); assert.equal(await st.load(), null); assert.equal(st.answered, true);
+  await createSaver({ stores: [st], snapshot: () => ({ v: 1 }), now: () => 0 }).flush();
+  assert.equal(f.log.length, 1); assert.equal((await st.load()).savedAt, 0);
+  const g = fakeClaude(); g.docs.set('data/users/u1/steelreach', { code: 'SR1.junk', savedAt: 1 });
+  const broken = await createClaudeStore(g.claude); assert.equal(await broken.load(), null); assert.equal(broken.answered, true, 'unreadable doc can be repaired by the next save');
+  const local = createLocalStore('k'); assert.equal(local.answered, false); assert.equal(await local.load(), null); assert.equal(local.answered, true);
 });
