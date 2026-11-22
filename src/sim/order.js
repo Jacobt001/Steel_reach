@@ -25,17 +25,35 @@ export function rebuildOrder(game) {
     }
   }
   const order = [];
-  for (const n of nodes) if (outdeg.get(n) === 0) order.push(n);
-  for (let h = 0; h < order.length; h++) {
-    for (const p of preds.get(order[h])) {
-      outdeg.set(p, outdeg.get(p) - 1);
-      if (outdeg.get(p) === 0) order.push(p);
+  const placed = new Set();
+  const place = (n) => { order.push(n); placed.add(n); };
+  let h = 0;
+  const drain = () => {
+    for (; h < order.length; h++) {
+      for (const p of preds.get(order[h])) {
+        outdeg.set(p, outdeg.get(p) - 1);
+        if (outdeg.get(p) === 0 && !placed.has(p)) place(p);
+      }
     }
-  }
-  // Whatever is left sits on or upstream of a cycle; id order keeps it deterministic.
+  };
+  for (const n of nodes) if (outdeg.get(n) === 0) place(n);
+  drain();
+  // Kahn stalls on cycles. Break one by placing a node that sits on it, then resume, so lines
+  // feeding a loop still process downstream-first (the loop's own order is arbitrary but fixed).
+  // Leftovers are scanned in id order and the cycle is found by walking successors until a repeat.
   if (order.length < nodes.length) {
-    const placed = new Set(order);
-    order.push(...nodes.filter((n) => !placed.has(n)).sort((a, b) => a.id - b.id));
+    const left = nodes.filter((n) => !placed.has(n)).sort((a, b) => a.id - b.id);
+    for (const start of left) {
+      if (placed.has(start)) continue;
+      const seen = new Set();
+      let cur = start;
+      while (!seen.has(cur)) {
+        seen.add(cur);
+        cur = nextOf(game, cur).find((s) => inSet.has(s) && !placed.has(s));
+      }
+      place(cur);
+      drain();
+    }
   }
   game.order = order;
   game.topoDirty = false;

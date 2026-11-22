@@ -9,53 +9,21 @@ export const EPS = 1e-6;
 
 export const beltSpeed = (game) => BAL.beltTilesPerSec[game.mods.beltLevel] / TPS;
 
-// A 5th item (still at negative pos) is only safe if the front of the tile leaves this tick;
-// if the front is refused instead, the whole queue compresses and the extra item stays stranded
-// behind the tile edge. Refusals ripple down saturated belts within one tick, so the answer
-// is found by following saturated tiles ahead until something can take an item. Anything that
-// isn't a belt or the Hub counts as closed. The result is cached per tick, so a saturated line
-// costs O(length) per tick rather than O(length^2).
-const openMemo = new WeakMap();
-function frontCanLeave(game, b, v) {
-  let memo = openMemo.get(game);
-  if (!memo || memo.tick !== game.tick) openMemo.set(game, memo = { tick: game.tick, open: new Map() });
-  const path = [];
-  let cur = b, res;
-  for (;;) {
-    if (memo.open.has(cur)) { res = memo.open.get(cur); break; }
-    if (path.includes(cur)) { res = false; break; } // a saturated ring never frees itself
-    path.push(cur);
-    const f = cur.items[0];
-    if (f.pos + v < 1 - EPS && f.pos < BAL.waitPos - EPS) { res = true; break; } // not offering yet: moving freely
-    const t = entAt(game, cur.x + DX[cur.dir], cur.y + DY[cur.dir]);
-    if (!t) { res = false; break; }
-    if (t.type === 'hub') { res = true; break; }
-    if (t.type !== 'belt' || cur.dir === (t.dir + 2) % 4) { res = false; break; }
-    if (t.items.length < 4) {
-      const entry = Math.max(0, f.pos + v - 1);
-      res = t.items.length === 0 || t.items[t.items.length - 1].pos - BAL.spacing >= entry - v - EPS;
-      break;
-    }
-    cur = t; // saturated: it only takes our item if its own front leaves
-  }
-  for (const n of path) memo.open.set(n, res);
-  return res;
-}
-
-// Items may enter between ticks, so the entry check allows for one tick of travel: a feed
-// offering every tick still reaches the full 8 items/s instead of every third tick.
+// Inserts made outside the conveyor step (feed helper, machine outputs) happen between ticks,
+// so they get one tick of travel credit: without it an every-tick feed would only land every
+// third tick (spacing 0.3, ~6.67 items/s) instead of the full 8/s. Hand-offs during the step
+// are already positioned exactly and get no credit. Items never enter at a negative pos, so the
+// 4-per-tile cap is a plain length test and a stopped tile can never hold a stranded 5th item.
 export function acceptBelt(game, b, item, moveDir, pos) {
   if (moveDir === (b.dir + 2) % 4) return NEVER;
   const { items } = b;
   if (items.length === 0) { items.push({ item, pos: Math.min(pos, BAL.waitPos) }); return OK; }
+  if (items.length >= 4) return BUSY;
   const v = beltSpeed(game);
-  // The 4-per-tile cap mostly falls out of spacing (a blocked front waits at 0.875, so the 4th
-  // item sits at 0.125 and fails the room check). The exception is a saturated 0.25-spaced
-  // stream, which needs a 5th item still at negative pos while its front is leaving; allow that
-  // only when the front can really leave, or the extra item would be stranded in a stopped tile.
-  if (items.length >= 5 || (items.length === 4 && !frontCanLeave(game, b, v))) return BUSY;
+  const credit = game.stepping ? 0 : v;
+  const p = pos + credit;
   const room = items[items.length - 1].pos - BAL.spacing;
-  if (room >= pos - v - EPS) { items.push({ item, pos: Math.min(pos, room) }); return OK; }
+  if (room >= p - credit - EPS) { items.push({ item, pos: Math.min(p, room) }); return OK; }
   return BUSY;
 }
 

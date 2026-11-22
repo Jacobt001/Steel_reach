@@ -39,3 +39,26 @@ test('belt into the Hub counts toward goals', () => {
   for (let t = 0; t < 400; t++) { feed(g, 70, 79, ['iron_plate']); tick(g); }
   assert.ok(g.stock.iron_plate > 0); assert.equal(g.prog.iron_plate, g.stock.iron_plate);
 });
+test('side feeder into a backed-up line never exceeds 4 per tile or goes negative', () => {
+  const g = testGame();
+  for (let y = 6; y <= 9; y++) place(g, 'belt', 14, y, { dir: 2 }); // side feeder placed first
+  line(g, 10, 10, 6);
+  for (let t = 0; t < 600; t++) {
+    feed(g, 14, 6, ['gear']); feed(g, 10, 10, ['wire']); tick(g);
+    for (const e of g.ents.values()) if (e.type === 'belt') {
+      assert.ok(e.items.length <= 4, `t=${t} (${e.x},${e.y}) holds ${e.items.length}`);
+      for (const it of e.items) assert.ok(it.pos >= -1e-6, `t=${t} (${e.x},${e.y}) pos ${it.pos}`);
+    }
+  }
+});
+test('a line feeding a loop moves items as fast as the same line alone', () => {
+  const travel = (withLoop) => {
+    const g = testGame(); line(g, 10, 10, 19);
+    if (withLoop) { place(g,'belt',29,10,{dir:1}); place(g,'belt',30,10,{dir:2}); place(g,'belt',30,11,{dir:3}); place(g,'belt',29,11,{dir:0}); }
+    offer(g, g.ents.get(g.grid[10*160+10]), 'gear', 1, 0);
+    let t = 0; // measure on a line tile both layouts share
+    while (t < 400) { tick(g); t++; if (drain(g, 27, 10).length) break; }
+    return t;
+  };
+  assert.ok(Math.abs(travel(true) - travel(false)) <= 2, `${travel(true)} vs ${travel(false)}`);
+});
