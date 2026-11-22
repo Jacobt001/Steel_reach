@@ -2,14 +2,16 @@
 import { rebuildOrder } from './order.js';
 import { stepBelt, beltSpeed } from './belts.js';
 import { stepBridge, stepTunnelIn, stepTunnelOut, stepSplitter, stepMerger } from './pieces.js';
+import { rebuildPower, stepPower } from './power.js';
 import { stepStorage, stepMachine } from './machines.js';
 
 const STEPPERS = { belt: stepBelt, bridge: stepBridge, tunnel_in: stepTunnelIn, tunnel_out: stepTunnelOut, splitter: stepSplitter, merger: stepMerger };
-// Generators burn fuel in the power task; until then they only take intake.
 const MACHINE_STEPPERS = { storage: stepStorage, miner: stepMachine, furnace: stepMachine, assembler: stepMachine, fabricator: stepMachine, foundry: stepMachine, refinery: stepMachine };
 
 export function tick(game) {
   if (game.topoDirty) rebuildOrder(game);
+  if (game.powerDirty) rebuildPower(game);
+  stepPower(game);
   const v = beltSpeed(game);
   // Machines run first and outside the conveyor step, so what they push onto a belt gets the
   // between-tick travel credit like any other outside insert.
