@@ -1,5 +1,7 @@
 // Bridges and tunnels. Every lane reuses the belt lane code so queueing, capacity and credit
 // rules can never drift apart from plain belts.
+import { BAL, DX, DY } from '../config.js';
+import { entAt } from '../game/state.js';
 import { NEVER, OK, BUSY, offer } from './offer.js';
 import { acceptItems, stepLane, beltSpeed, EPS } from './belts.js';
 
@@ -56,4 +58,84 @@ export function acceptTunnelOut(game, e, item, pos, mode) {
 export function stepTunnelOut(game, e, v) {
   const r = stepLane(game, e.x, e.y, e.items, e.dir, v);
   if (r !== undefined) e.blocked = r;
+}
+
+// Splitters and mergers hold one item that crosses the tile. It enters near the far edge
+// (1 - spacing) whatever pos was offered: crossing the whole tile would cap the piece at
+// 2 items/s, while this lets it pass roughly one item per spacing of travel.
+function stepHold(game, e, v, targets) {
+  const h = e.hold;
+  if (!h) return;
+  const { waitPos } = BAL;
+  const np = h.pos + v;
+  // Same rule as a belt's front item: offer on arrival, and keep offering once waiting so a
+  // blocked hold doesn't bounce between waitPos and the tile edge.
+  if (np < 1 - EPS && h.pos < waitPos - EPS) { h.pos = np; return; }
+  for (const t of targets) {
+    if (offer(game, t.ent, h.item, t.dir, Math.max(0, np - 1), 'deadEnd') === OK) {
+      e.hold = null;
+      return t.done?.();
+    }
+  }
+  h.pos = waitPos;
+}
+
+export function acceptSplitter(game, e, item, moveDir) {
+  if (moveDir !== e.dir) return NEVER;
+  if (e.hold) return BUSY;
+  e.hold = { item, pos: 1 - BAL.spacing };
+  return OK;
+}
+
+export function stepSplitter(game, e, v) {
+  if (!e.hold) return;
+  // Left, front, right, rotated to start at rr so refusals just fall through to the next output.
+  const outs = [(e.dir + 3) % 4, e.dir, (e.dir + 1) % 4];
+  const targets = [];
+  for (let k = 0; k < 3; k++) {
+    const i = (e.rr + k) % 3, d = outs[i];
+    const ent = entAt(game, e.x + DX[d], e.y + DY[d]);
+    if (ent) targets.push({ ent, dir: d, done: () => { e.rr = (i + 1) % 3; } });
+  }
+  stepHold(game, e, v, targets);
+}
+
+// Input sides in the order the merger serves them: 0 left, 1 back, 2 right.
+const sideDir = (e, s) => [(e.dir + 1) % 4, e.dir, (e.dir + 3) % 4][s];
+const sideOf = (e, moveDir) => [1, 0, -1, 2][(moveDir - e.dir + 4) % 4];
+
+// The items queued on whatever feeds side s, or null when nothing can feed from there.
+function feeder(game, e, s) {
+  const m = sideDir(e, s);
+  const t = entAt(game, e.x - DX[m], e.y - DY[m]);
+  if (!t) return null;
+  switch (t.type) {
+    case 'belt': case 'tunnel_out': return t.dir === m ? t.items : null;
+    case 'bridge': return t.dirH === m ? t.laneH : t.dirV === m ? t.laneV : null;
+    case 'splitter': case 'merger': return t.dir === m ? (t.hold ? [t.hold] : []) : null;
+    default: return null;
+  }
+}
+
+export function acceptMerger(game, e, item, moveDir) {
+  if (moveDir === (e.dir + 2) % 4) return NEVER;
+  if (e.hold) return BUSY;
+  const s = sideOf(e, moveDir);
+  if (s !== e.turn) {
+    // Another input is next in line: yield only if its front item is about to be offered.
+    const q = feeder(game, e, e.turn);
+    if (q && q.length && q[0].pos >= BAL.waitPos - beltSpeed(game) - EPS) return BUSY;
+  }
+  e.hold = { item, pos: 1 - BAL.spacing };
+  // Skip sides nothing feeds, otherwise the turn would park on an empty side and the first
+  // belt in processing order would win every contest.
+  e.turn = (s + 1) % 3;
+  for (let k = 1; k <= 3; k++) { const c = (s + k) % 3; if (feeder(game, e, c)) { e.turn = c; break; } }
+  return OK;
+}
+
+export function stepMerger(game, e, v) {
+  if (!e.hold) return;
+  const ent = entAt(game, e.x + DX[e.dir], e.y + DY[e.dir]);
+  stepHold(game, e, v, ent ? [{ ent, dir: e.dir }] : []);
 }

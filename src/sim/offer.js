@@ -2,7 +2,8 @@
 // Later tasks add cases (splitters, machines); unknown types refuse forever.
 import { acceptBelt } from './belts.js';
 import { acceptHub } from './hub.js';
-import { acceptBridge, acceptTunnelIn, acceptTunnelOut } from './pieces.js';
+import { acceptBridge, acceptTunnelIn, acceptTunnelOut, acceptSplitter, acceptMerger } from './pieces.js';
+import { acceptStorage } from './machines.js';
 
 // OK: taken. BUSY: try again later. NEVER: this target can't ever take it from here.
 // STALL: target is full of this item (status text names it).
@@ -16,6 +17,9 @@ export function offer(game, ent, item, moveDir, pos = 0, mode = 'deadEnd') {
     case 'bridge': return acceptBridge(game, ent, item, moveDir, pos);
     case 'tunnel_in': return acceptTunnelIn(game, ent, item, moveDir);
     case 'tunnel_out': return acceptTunnelOut(game, ent, item, pos, mode);
+    case 'splitter': return acceptSplitter(game, ent, item, moveDir);
+    case 'merger': return acceptMerger(game, ent, item, moveDir);
+    case 'storage': return acceptStorage(game, ent, item, moveDir, mode);
     case 'hub': return acceptHub(game, item);
     default: return NEVER;
   }

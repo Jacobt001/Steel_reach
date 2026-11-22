@@ -2,7 +2,7 @@
 import { DX, DY } from '../config.js';
 import { entAt } from '../game/state.js';
 
-// Entities a conveyor hands items to. Later tasks add splitter and merger.
+// Entities a conveyor hands items to. 
 export function nextOf(game, node) {
   if (node.type === 'belt') {
     const t = entAt(game, node.x + DX[node.dir], node.y + DY[node.dir]);
@@ -15,6 +15,15 @@ export function nextOf(game, node) {
   }
   if (node.type === 'tunnel_in') { const t = game.ents.get(node.pair); return t ? [t] : []; }
   if (node.type === 'tunnel_out') {
+    const t = entAt(game, node.x + DX[node.dir], node.y + DY[node.dir]);
+    return t ? [t] : [];
+  }
+  if (node.type === 'splitter') {
+    const out = [];
+    for (const d of [(node.dir + 3) % 4, node.dir, (node.dir + 1) % 4]) { const t = entAt(game, node.x + DX[d], node.y + DY[d]); if (t) out.push(t); }
+    return out;
+  }
+  if (node.type === 'merger') {
     const t = entAt(game, node.x + DX[node.dir], node.y + DY[node.dir]);
     return t ? [t] : [];
   }
@@ -66,5 +75,6 @@ export function rebuildOrder(game) {
     }
   }
   game.order = order;
+  game.topoVer = (game.topoVer ?? 0) + 1; // invalidates cached machine output ports
   game.topoDirty = false;
 }
