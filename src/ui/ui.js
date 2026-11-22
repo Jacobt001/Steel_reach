@@ -89,6 +89,14 @@ function fill(e, f) {
 function setDisabled(e, d) { d = !!d; if (e._d !== d) { e._d = d; e.disabled = d; } }
 
 const ENT_NAMES = { tunnel_in: 'Tunnel entrance', tunnel_out: 'Tunnel exit' };
+// "Saved to phone · 12 s ago", or the reason it isn't saving.
+function saveLine(key, st, now) {
+  const where = key === 'phone' ? 'phone' : 'account';
+  if (st.error) return `${where === 'phone' ? 'Phone' : 'Account'}: ${st.error}`;
+  if (st.okAt === null) return `${where === 'phone' ? 'Phone' : 'Account'}: not saved yet`;
+  const s = Math.max(0, Math.round((now - st.okAt) / 1000));
+  return `Saved to ${where} · ${s < 90 ? `${s} s` : `${Math.round(s / 60)} min`} ago`;
+}
 const entName = (e) => ENT_NAMES[e.type] ?? BUILDINGS[e.type]?.name ?? e.type;
 const CONVEYORS = new Set(['belt', 'bridge', 'tunnel_in', 'tunnel_out', 'splitter', 'merger']);
 
@@ -97,7 +105,7 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
   const $ = (id) => root.querySelector('#' + id);
   const body = document.body;
   const E = {};
-  for (const id of ['ui', 'tier', 'goals', 'research', 'menu', 'hint', 'undo', 'recipe', 'rotate', 'flip', 'cancel', 'ok', 'tools', 'toast', 'unfocus', 'scrim', 'sheet', 'sheet-title', 'sheet-close']) E[id] = $(id);
+  for (const id of ['ui', 'tier', 'goals', 'research', 'menu', 'savewarn', 'hint', 'undo', 'recipe', 'rotate', 'flip', 'cancel', 'ok', 'tools', 'toast', 'unfocus', 'scrim', 'sheet', 'sheet-title', 'sheet-close']) E[id] = $(id);
   for (const n of root.querySelectorAll('[data-icon]')) n.innerHTML = ICONS[n.dataset.icon] ?? '';
   const badge = E.research.querySelector('.badge');
   const chipSw = E.recipe.querySelector('.sw'), chipText = E.recipe.querySelector('.t');
@@ -205,6 +213,8 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
   on(E.goals, () => { click(); toggle('goals', openGoals); });
   on(E.research, () => { click(); toggle('research', openResearch); });
   on(E.menu, () => { click(); toggle('menu', openMenu); });
+  // The warning chip is a shortcut to where the details are.
+  on(E.savewarn, () => { click(); if (sheet?.kind !== 'menu') openMenu(); });
 
   // --- hint card -----------------------------------------------------------------------------
   function retireHint() { g.settings.hintDone = true; show(E.hint, false); }
@@ -635,6 +645,8 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
             () => toast("Couldn't copy the save code"));
         });
       });
+      // Where the game was last saved, or why not (I1). Plain text lines, repainted only on change.
+      const saveLines = { phone: h('p', { class: 'note' }), account: h('p', { class: 'note' }) };
       const backups = actions.listBackups?.() ?? [];
       const recover = btn('btn wide', 'Recover backup');
       on(recover, () => openBackups());
@@ -665,7 +677,18 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
       const fresh = btn('btn wide danger');
       twoTap(fresh, 'New game', 'Tap again to start over', () => { closeSheet(); actions.newGame?.(); });
 
+      function paintSaves() {
+        const hl = actions.saveHealth?.() ?? null;
+        for (const k of ['phone', 'account']) {
+          const st = hl?.stores.find((x) => x.key === k);
+          show(saveLines[k], !!st);
+          if (st) setText(saveLines[k], saveLine(k, st, hl.now));
+        }
+      }
+      actions.prepareSaveCode?.(); // R30: the code is ready by the time Copy is tapped
       function update() {
+        actions.prepareSaveCode?.();
+        paintSaves();
         setText(sound, g.settings.sfx ? 'Sound: On' : 'Sound: Off');
         sound.setAttribute('aria-pressed', g.settings.sfx ? 'true' : 'false');
         // The overlay only means something once power exists.
@@ -684,7 +707,8 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
         }
       }
       return {
-        nodes: [sound, overlay, focus, h('h3', { text: 'Save code' }), copy, paste, load,
+        nodes: [sound, overlay, focus, h('h3', { text: 'Saving' }), saveLines.phone, saveLines.account,
+          h('h3', { text: 'Save code' }), copy, paste, load,
           h('p', { class: 'note', text: 'Moves your game between the Claude link and the Home Screen app.' }),
           recover,
           h('h3', { text: 'More' }), perfBtn, perfBox, fresh],
@@ -805,6 +829,7 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
     setText(E.tier, tierLabel(g));
     for (const r of goalRows) paintGoal(r);
     show(badge, anyResearchAffordable(g));
+    if (actions.saveHealth) show(E.savewarn, actions.saveHealth()?.stale);
     if (toolsDirty) refreshTools();
     sheet?.update?.();
   }
