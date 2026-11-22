@@ -16,6 +16,25 @@ export function doAction(game, fn) {
   }
 }
 
+// A gesture spread over many pointer events (an erase drag) still has to undo as one step, but
+// doAction only folds calls made inside its own callback. run() records into the group without
+// leaving game.cur open between events (so the sim or an Undo tap in between can't write into
+// it); commit() pushes everything as a single action.
+export function actionGroup(game) {
+  const rec = [];
+  return {
+    run(fn) {
+      const prev = game.cur;
+      game.cur = rec;
+      try { return fn(); } finally { game.cur = prev; }
+    },
+    commit() {
+      if (rec.length) doAction(game, () => { game.cur.push(...rec); });
+      rec.length = 0;
+    },
+  };
+}
+
 export function undo(game) {
   const rec = game.undo.pop();
   if (!rec) return false;

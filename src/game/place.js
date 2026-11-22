@@ -33,7 +33,8 @@ export function canPlace(game, type, x, y, opts = {}) {
   return { ok: true };
 }
 
-function defaultRecipe(game, type, opts) {
+// Exported so the placement ghost shows the same recipe art that place() will use.
+export function defaultRecipe(game, type, opts = {}) {
   if (type === 'refinery') return 'plastic';
   if (opts.recipe) return opts.recipe;
   if (type === 'furnace') return null; // furnace picks its recipe from the first ore it is fed
