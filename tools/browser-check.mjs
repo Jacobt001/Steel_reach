@@ -245,6 +245,19 @@ for (const z of [44, 20, 16]) {
   // After measuring: a screenshot stalls frames and would pollute the fps.
   if (z === 20) await page.screenshot({ path: join(SHOTS, '7-stress-zoom20-light.png') });
   log(stressRes[z].fps >= FPS_MIN && stressRes[z].tickMs <= TICK_MS_MAX, `7. stress fps and tick ms at zoom ${z}`, stressRes[z]);
+  if (z === 20) {
+    // Pinch from zoom 20 to ~36 over 2 s: Z changes every frame, which once rebuilt the item
+    // sprites every frame. Frame pacing during the gesture must stay smooth.
+    await page.evaluate(() => { window.__gaps = []; window.__last = performance.now(); const f = () => { const n = performance.now(); window.__gaps.push(n - window.__last); window.__last = n; window.__raf = requestAnimationFrame(f); }; window.__raf = requestAnimationFrame(f); });
+    const cx = 195, cy = 300, steps = 60;
+    await touch(cdp, 'touchStart', [[cx - 50, cy], [cx + 50, cy]]);
+    for (let i = 1; i <= steps; i++) { const d = 50 + (i / steps) * 45; await sleep(33); await touch(cdp, 'touchMove', [[cx - d, cy], [cx + d, cy]]); }
+    await touch(cdp, 'touchEnd', []);
+    const pinch = await page.evaluate(() => { cancelAnimationFrame(window.__raf); const g = window.__gaps.slice(5), sum = g.reduce((a, b) => a + b, 0); return { z: +window.__steelreach.cam.z.toFixed(1), fps: +(g.length / (sum / 1000)).toFixed(1), maxGapMs: Math.round(Math.max(...g)) }; });
+    log(pinch.z > 30 && pinch.fps >= 40 && pinch.maxGapMs <= 150, '7. pinch 20 to 36 keeps frames smooth', pinch);
+    await aimAtFactory(20);
+    await sleep(500);
+  }
 }
 log(a.errors.length === 0, '7. stress runs without errors', a.errors);
 

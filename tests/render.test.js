@@ -256,3 +256,22 @@ test('terrain survives a canvas memory cap and frees the chunks it drops (R23)',
     assert.ok(made.filter((m) => m.width === 0 && m.height === 0).length >= 19, 'evicted chunks are released');
   } finally { delete globalThis.OffscreenCanvas; }
 });
+
+test('zooming 20 to 36 reuses item sprites instead of building canvases every frame', () => {
+  let made = 0;
+  class FakeCanvas { constructor() { made++; } getContext() { return new Proxy({}, { get: (t, k) => (k in t ? t[k] : () => {}), set: (t, k, v) => (t[k] = v, true) }); } }
+  globalThis.OffscreenCanvas = FakeCanvas;
+  try {
+    const g = testGame();
+    for (let x = 10; x < 30; x++) place(g, 'belt', x, 10, { dir: 1 });
+    const b = g.ents.get(g.grid[10 * 160 + 20]); b.items.push({ item: 'iron_ore', pos: 0.5 }, { item: 'gear', pos: 0.25 });
+    const c = createCamera(390, 700); c.x = 20; c.y = 10.5;
+    const sweep = () => { for (let z = 20; z <= 36; z += 0.05) { c.z = z; drawFrame(rec().ctx, g, c, 0, {}, THEME); } };
+    sweep();
+    const first = made;
+    // ~320 frames, 2 item types on screen, 1/8 px buckets: tens of canvases, not hundreds or thousands.
+    assert.ok(first > 0 && first <= 60, `built ${first} canvases`);
+    sweep();
+    assert.equal(made, first, 'a second pass over the same zooms builds nothing');
+  } finally { delete globalThis.OffscreenCanvas; }
+});

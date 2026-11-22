@@ -272,27 +272,38 @@ function lane(game, items, x, y, inDir, dir, kind, va, v) {
 // zoom, device scale or edge colour changes (a few entries stay cached so the magnifier's second
 // zoom doesn't thrash). Null where no canvas can be made (Node tests): paths are used instead.
 const SPRITE_Z = 36;
+// The item radius is rounded up to the next 1/8 px, and sprites are drawn scaled down by at most
+// ~5% to the exact size. Zoom gestures change Z every frame; without the buckets each frame
+// would build fresh canvases (jank, and iOS frees canvas memory slowly). Each sprite is built
+// lazily, so entering a bucket costs one small canvas per item type actually on screen.
+const BUCKET = 8;
 const spriteSets = new Map();
-function spritesFor(ctx, r, re, theme) {
+function spritesFor(ctx, r, theme) {
   if (typeof OffscreenCanvas === 'undefined' && typeof document === 'undefined') return null;
   const dpr = (typeof ctx.getTransform === 'function' ? ctx.getTransform()?.a : 0) || 1;
-  const key = `${r.toFixed(2)}|${dpr}|${theme.itemEdge}`;
+  const br = Math.ceil(r * BUCKET) / BUCKET;
+  const key = `${br}|${dpr}|${theme.itemEdge}`;
   let set = spriteSets.get(key);
   if (set !== undefined) { spriteSets.delete(key); spriteSets.set(key, set); return set; }
+  // Same edge width rule as the vector path, evaluated at the bucket's zoom.
+  const re = br + Math.max(0.9, (br / ITEM_R) * 0.03);
   const size = Math.ceil(2 * re * 1.35 + 2), px = Math.ceil(size * dpr);
-  set = { size: px / dpr, dpr, img: [] };
-  for (let i = 0; i < NI; i++) {
-    const c = typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: px, height: px }) : new OffscreenCanvas(px, px);
-    const g = c.getContext('2d');
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const h = set.size / 2;
-    g.beginPath(); ITEM_SHAPE[i](g, h, h, re); g.fillStyle = theme.itemEdge; g.fill();
-    g.beginPath(); ITEM_SHAPE[i](g, h, h, r); g.fillStyle = ITEM_COLOR[i]; g.fill();
-    set.img.push(c);
-  }
+  set = { r: br, re, size: px / dpr, dpr, edge: theme.itemEdge, img: new Array(NI).fill(null) };
   spriteSets.set(key, set);
-  if (spriteSets.size > 6) spriteSets.delete(spriteSets.keys().next().value);
+  // A pinch walks through ~16 buckets between zoom 20 and 36; keep them all.
+  if (spriteSets.size > 20) spriteSets.delete(spriteSets.keys().next().value);
   return set;
+}
+function spriteImage(set, i) {
+  let c = set.img[i];
+  if (c !== null) return c;
+  const { size, dpr, r, re } = set, px = Math.ceil(size * dpr);
+  c = typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: px, height: px }) : new OffscreenCanvas(px, px);
+  const g = c.getContext('2d'), h = size / 2;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.beginPath(); ITEM_SHAPE[i](g, h, h, re); g.fillStyle = set.edge; g.fill();
+  g.beginPath(); ITEM_SHAPE[i](g, h, h, r); g.fillStyle = ITEM_COLOR[i]; g.fill();
+  return (set.img[i] = c);
 }
 
 function drawItems(ctx, game, alpha, theme) {
@@ -322,14 +333,16 @@ function drawItems(ctx, game, alpha, theme) {
   const r = ITEM_R * Z, re = r + Math.max(0.9, Z * 0.03);
   // Zoomed out, thousands of tiny items are slow as vector paths (10,000 items made zoom 20 the
   // slowest view, 40-50 fps in headless Chrome); a pre-drawn sprite per type blits instead.
-  const sp = Z < SPRITE_Z ? spritesFor(ctx, r, re, theme) : null;
+  const sp = Z < SPRITE_Z ? spritesFor(ctx, r, theme) : null;
   if (sp !== null) {
     for (let i = 0; i < NI; i++) {
       const n = IC[i];
       if (n === 0) continue;
-      const b = IB[i], img = sp.img[i], h = sp.size / 2, d = sp.dpr;
-      // Whole device pixels: an unscaled, unshifted blit is the fast path.
-      for (let k = 0; k < 2 * n; k += 2) ctx.drawImage(img, Math.round((b[k] - h) * d) / d, Math.round((b[k + 1] - h) * d) / d, sp.size, sp.size);
+      const b = IB[i], img = spriteImage(sp, i), d = sp.dpr;
+      // Drawn at the exact radius (a hair under the bucket's), centred on the item, on whole
+      // device pixels.
+      const w = sp.size * (r / sp.r), h = w / 2;
+      for (let k = 0; k < 2 * n; k += 2) ctx.drawImage(img, Math.round((b[k] - h) * d) / d, Math.round((b[k + 1] - h) * d) / d, w, w);
     }
     return;
   }
