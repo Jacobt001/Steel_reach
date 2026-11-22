@@ -279,12 +279,18 @@ test('erase: a tap is one step; a drag erases live and undoes as one step', () =
   look(h, 80, 80); tap(h, 79, 79); assert.equal(entAt(h.game, 79, 79).type, 'hub');
 });
 
-test('erase drag cut short by a second finger stays undoable', () => {
+test('erase drag cut short by a second finger puts back what it erased; ✕ mid-drag keeps it, undoable', () => {
   const h = mk([32, 31]); for (let x = 30; x < 34; x++) place(h.game, 'belt', x, 30, { dir: 1 });
   h.game.undo.length = 0; h.t.setTool('erase');
   drag(h, [[30,30],[31,30]], { lift: false });
-  h.t.gestures.down({id:2,x:10,y:10,t:clock+100});
-  assert.equal(h.game.undo.length, 1); undo(h.game); assert.equal(belts(h.game).length, 4);
+  assert.equal(belts(h.game).length, 2);
+  h.t.gestures.down({id:2,x:10,y:10,t:clock+100}); // the second finger meant pan/zoom, not erase
+  assert.equal(belts(h.game).length, 4); assert.equal(h.game.undo.length, 0);
+  h.t.gestures.up({id:2,x:10,y:10,t:clock+110}); h.t.gestures.up({id:1,x:10,y:10,t:clock+120});
+  drag(h, [[30,30],[31,30]], { lift: false });
+  h.t.cancel(); // ✕ (or setTool) ends the drag but keeps what it erased, as one undo step
+  assert.equal(belts(h.game).length, 2); assert.equal(h.game.undo.length, 1);
+  undo(h.game); assert.equal(belts(h.game).length, 4);
 });
 
 test('rotate: bridge cycles the four lane pairs, splitter turns through four directions', () => {
@@ -357,4 +363,61 @@ test('switching tools mid-drag drops the drag without placing; unknown ids fall 
   h.t.gestures.up({id:1,x:0,y:0,t:clock+500});
   assert.equal(belts(h.game).length, 0);
   h.t.setTool('hub'); assert.equal(h.t.tool, 'pan'); h.t.setTool('nope'); assert.equal(h.t.tool, 'pan');
+});
+
+// Fingers land tens of ms apart, so the first one often moves past 8 px (and into a new tile)
+// before the second arrives: a drag starts, then the second finger cancels it into a pinch.
+function staggeredPinch(h, x, y) {
+  const [sx, sy] = centre(h.cam, x, y), g = h.t.gestures, c = (clock += 1000);
+  g.down({id:1,x:sx,y:sy,t:c}); g.move({id:1,x:sx+50,y:sy+10,t:c+16});
+  g.down({id:2,x:sx+50,y:sy+90,t:c+30});
+  g.move({id:2,x:sx+50,y:sy+150,t:c+46}); g.move({id:1,x:sx+50,y:sy-20,t:c+62});
+  g.up({id:2,x:sx+50,y:sy+150,t:c+80}); g.move({id:1,x:sx+90,y:sy-20,t:c+96}); g.up({id:1,x:sx+90,y:sy-20,t:c+110});
+}
+const preview = (t) => t.view.beltPreview && t.view.beltPreview.map(p => [p.x, p.y, p.dir, p.bad]);
+
+test('Fix 1: a staggered pinch keeps the two-tap start, its L preview and marker', () => {
+  const h = mk([61, 61]); h.t.setTool('belt');
+  doubleTap(h, 60, 60);
+  staggeredPinch(h, 61, 63);
+  assert.deepEqual(preview(h.t), [[60,60,1,false]]);
+  assert.deepEqual([h.t.view.selected.x, h.t.view.selected.y], [60, 60]); assert.equal(h.t.view.magnifier, null);
+  look(h, 61, 61); tap(h, 63, 62); const l = preview(h.t);
+  look(h, 61, 61); staggeredPinch(h, 59, 64);
+  assert.deepEqual(preview(h.t), l, 'the L preview survives the pinch');
+  assert.deepEqual([h.t.view.selected.x, h.t.view.selected.y], [60, 60]);
+  assert.ok(h.cam.z > 44, 'the pinch still zoomed');
+  h.t.confirm();
+  assert.equal(belts(h.game).length, 6); assert.equal(h.game.undo.length, 1);
+});
+
+test('Fix 1: a staggered pinch leaves a machine ghost where it was, even one grabbed and moved', () => {
+  const h = mk([60, 61]); h.t.setTool('furnace');
+  tap(h, 60, 60); assert.deepEqual([h.t.view.ghost.x, h.t.view.ghost.y], [59, 59]);
+  staggeredPinch(h, 58, 64);
+  assert.deepEqual([h.t.view.ghost.x, h.t.view.ghost.y, h.t.view.ghost.ok], [59, 59, true]);
+  look(h, 60, 61); staggeredPinch(h, 59, 59); // grabbed by its own tile, dragged a tile, then pinched
+  assert.deepEqual([h.t.view.ghost.x, h.t.view.ghost.y], [59, 59]);
+  h.t.setTool('assembler'); look(h, 60, 61); staggeredPinch(h, 60, 60);
+  assert.equal(h.t.view.ghost, null, 'no ghost before, none after');
+  assert.equal(h.game.ents.size, 1);
+});
+
+test('Fix 1: a staggered pinch keeps a pending tunnel entrance and its exits', () => {
+  const h = mk([42, 42]); h.t.setTool('tunnel');
+  tap(h, 40, 40); const exits = h.t.view.tunnelExits;
+  staggeredPinch(h, 41, 43);
+  assert.deepEqual(h.t.view.ghost, { type: 'tunnel', x: 40, y: 40, dir: 1, ok: true, reason: null });
+  assert.deepEqual(h.t.view.tunnelExits, exits); assert.equal(h.game.ents.size, 1);
+  look(h, 42, 42); tap(h, 43, 40);
+  assert.equal(entAt(h.game, 43, 40).type, 'tunnel_out');
+});
+
+test('Fix 1: a staggered pinch with no pending state places, erases and previews nothing', () => {
+  const h = mk([61, 61]); place(h.game, 'belt', 61, 61, { dir: 1 }); place(h.game, 'belt', 62, 61, { dir: 1 });
+  h.t.setTool('belt'); staggeredPinch(h, 60, 60);
+  assert.equal(h.t.view.beltPreview, null); assert.equal(belts(h.game).length, 2); assert.equal(h.game.undo.length, 0);
+  h.t.setTool('erase'); look(h, 61, 61); staggeredPinch(h, 61, 61);
+  assert.equal(belts(h.game).length, 2); assert.equal(h.game.undo.length, 0);
+  assert.equal(entAt(h.game, 61, 61).dir, 1);
 });

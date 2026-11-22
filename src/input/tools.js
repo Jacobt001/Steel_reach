@@ -187,7 +187,11 @@ export function createTools({ game, cam, ui, sfx }) {
     const k = kindOf(tool);
     if (k === 'pan') { drag = { kind: k, x, y }; return; }
     const [tx, ty] = screenToTile(cam, x, y);
-    drag = { kind: k, fx: x, fy: y, tx, ty };
+    // Saved before anything changes: if a second finger turns this into a pinch, the drag never
+    // happened (cancelDrag puts these back). A pending two-tap start must survive a pan/zoom
+    // between its two taps, and fingers that land tens of ms apart often start a drag first.
+    const saved = { pending, ghost: view.ghost, tunnelIn, tunnelExits: view.tunnelExits };
+    drag = { kind: k, fx: x, fy: y, tx, ty, saved };
     view.magnifier = { x, y, tile: [tx, ty] };
     if (k === 'belt') {
       setPending(null); // drawing by hand replaces any tap preview
@@ -247,8 +251,24 @@ export function createTools({ game, cam, ui, sfx }) {
     // Ghost: stays where it was dropped, waiting for ✓.
   }
 
-  // Ends a drag without finishing it, so nothing new is placed. Erases already happened as the
-  // finger passed; they are committed so Undo can still bring them back. A dragged ghost stays.
+  // A second finger (or pointercancel) turned the drag into something else: undo everything it
+  // did, including what dragStart changed, so a pinch never edits the map or loses a pending
+  // ghost, two-tap start or tunnel entrance.
+  function cancelDrag() {
+    const d = drag;
+    if (!d) return;
+    drag = null;
+    if (d.kind === 'pan') return; // the pinch carries on panning from here
+    view.magnifier = null;
+    if (d.kind === 'erase') d.group.revert();
+    const s = d.saved;
+    setPending(s.pending); // also clears the drag's belt preview when nothing was pending
+    view.ghost = s.ghost; tunnelIn = s.tunnelIn; view.tunnelExits = s.tunnelExits;
+  }
+
+  // Ends a drag on purpose (✕, setTool, setGame) without finishing it, so nothing new is placed.
+  // Erases already happened as the finger passed; they are committed so Undo can still bring
+  // them back. A dragged ghost stays where it is.
   function endDrag() {
     const d = drag;
     if (!d) return;
@@ -282,7 +302,7 @@ export function createTools({ game, cam, ui, sfx }) {
   const gestures = createGestures({
     tap: (x, y) => onTap(x, y, false),
     doubleTap: (x, y) => onTap(x, y, true),
-    dragStart, dragMove, dragEnd, dragCancel: endDrag, pinch: onPinch,
+    dragStart, dragMove, dragEnd, dragCancel: cancelDrag, pinch: onPinch,
   });
 
   // Drops everything pending; view.selected is the UI's except for the two-tap marker.

@@ -19,7 +19,8 @@ export function doAction(game, fn) {
 // A gesture spread over many pointer events (an erase drag) still has to undo as one step, but
 // doAction only folds calls made inside its own callback. run() records into the group without
 // leaving game.cur open between events (so the sim or an Undo tap in between can't write into
-// it); commit() pushes everything as a single action.
+// it); commit() pushes everything as a single action; revert() takes it all back unrecorded,
+// for a gesture that turned out to be something else (a second finger made it a pinch).
 export function actionGroup(game) {
   const rec = [];
   return {
@@ -32,13 +33,16 @@ export function actionGroup(game) {
       if (rec.length) doAction(game, () => { game.cur.push(...rec); });
       rec.length = 0;
     },
+    revert() {
+      revert(game, rec);
+      rec.length = 0;
+    },
   };
 }
 
-export function undo(game) {
-  const rec = game.undo.pop();
-  if (!rec) return false;
-  // game.cur stays null here, so the reverts are not recorded as new actions.
+// Plays one record backwards. Callers keep game.cur null, so the reverts are not recorded as a
+// new action.
+function revert(game, rec) {
   for (let i = rec.length - 1; i >= 0; i--) {
     const e = rec[i];
     if (e.op === 'add') {
@@ -49,5 +53,11 @@ export function undo(game) {
       addEnt(game, type, x, y, { ...props, id });
     }
   }
+}
+
+export function undo(game) {
+  const rec = game.undo.pop();
+  if (!rec) return false;
+  revert(game, rec);
   return true;
 }
