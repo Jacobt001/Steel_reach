@@ -41,3 +41,20 @@ test('webkitAudioContext fallback and tick rate limit', () => {
     t += 41; s.play('tick'); assert.ok(log.oscs > one);
   } finally { delete globalThis.webkitAudioContext; performance.now = realNow; }
 });
+
+test('I6: unlock resumes a context iOS left "interrupted", not only a "suspended" one; a failed graph leaves nothing half-built', () => {
+  const { Ctx, log } = fakeCtx(); globalThis.AudioContext = Ctx;
+  try {
+    const s = createSfx(); s.unlock(); assert.equal(log.resumed, 1);
+    // After an app switch iOS reports 'interrupted'; the next tap must wake it.
+    const ctxs = []; const Orig = Ctx; globalThis.AudioContext = class extends Orig { constructor() { super(); ctxs.push(this); } };
+    const s2 = createSfx(); s2.unlock(); const c = ctxs[0]; assert.equal(log.resumed, 2);
+    c.state = 'interrupted'; s2.unlock(); assert.equal(log.resumed, 3);
+    s2.unlock(); assert.equal(log.resumed, 3, 'running: nothing to do');
+    // createGain throwing on the first attempt: no ctx kept, so the next unlock builds a whole one.
+    let fail = true;
+    globalThis.AudioContext = class extends Orig { createGain() { if (fail) throw new Error('nope'); return super.createGain(); } };
+    const s3 = createSfx(); s3.unlock(); s3.play('place'); assert.equal(log.oscs, 0);
+    fail = false; s3.unlock(); const before = log.oscs; s3.play('place'); assert.ok(log.oscs > before);
+  } finally { delete globalThis.AudioContext; }
+});
