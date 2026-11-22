@@ -170,12 +170,39 @@ function pushItem(id, x, y) {
   IC[i]++;
 }
 
-// Read-only guess at whether the next tile takes a lane's front item on the coming tick. The
-// sim's accept functions change state, so they can't be asked; a wrong guess costs at most a
-// small one-off hop, never a repeating wobble (see lane()).
-function laneRoom(items, v) {
+// Front items and splitter/merger holds seen on the waiting spot, by the tick they were first
+// seen there. A flowing item can land exactly on the spot and leaves on the next tick, but one
+// still there a tick later was refused. Items never move back off the spot, so the same object
+// still on it means the same wait.
+const atWait = new WeakMap();
+function refused(game, o) {
+  if (Math.abs(o.pos - BAL.waitPos) > EPS) return false;
+  const t = atWait.get(o);
+  if (t === undefined) { atWait.set(o, game.tick); return false; }
+  return t < game.tick;
+}
+
+// Whether a hold or a lane's front item is handed on during the coming tick (unless its own
+// target refuses, which the renderer can't see until a tick later).
+const leaves = (game, o, v) => !refused(game, o) && (o.pos + v >= 1 - EPS || o.pos >= BAL.waitPos - EPS);
+
+// Read-only guess at whether the next tile takes a lane's front item. The sim's accept functions
+// change state, so they can't be asked; a wrong guess costs at most a small one-off hop, never a
+// repeating stall (see lane()).
+// When the item is offered this tick, enter is where it would land: downstream tiles step first,
+// so a flowing lane has moved on by v, and may have handed its own front on, before ours arrives.
+// When it is only offered next tick (soon), a lane that is flowing or has space counts as open.
+// For an item refused last tick (again), only room behind the lane's last item counts, which is
+// exactly what acceptItems checks, so a wrong yes can't repeat tick after tick.
+function laneRoom(game, items, kind, v, enter, soon, again) {
   const n = items.length;
-  return n === 0 || (n < 4 && items[n - 1].pos + v >= BAL.spacing - EPS);
+  if (n === 0) return true;
+  const jammed = !!kind || refused(game, items[0]);
+  if (soon) return !jammed || n < 4;
+  const gone = !again && !jammed && leaves(game, items[0], v) ? 1 : 0;
+  if (n - gone >= 4) return false;
+  if (n - gone === 0) return true;
+  return items[n - 1].pos + (jammed ? 0 : v) - BAL.spacing >= enter - EPS;
 }
 // Mirrors acceptMachine's dead-end rules: under the normal cap, or overstock while starved.
 function crafterTakes(m, item) {
@@ -187,18 +214,28 @@ function crafterTakes(m, item) {
   for (const k in r.in) if ((m.buf[k] ?? 0) < r.in[k]) return have < BAL.overstock;
   return false;
 }
-function frontTakes(game, x, y, dir, item, v) {
+// A hold that is about to move on (or, soon, isn't stuck) leaves room behind it.
+const holdClears = (game, t, v, soon) => t.hold === null || (!t.blockedKind && (soon ? !refused(game, t.hold) : leaves(game, t.hold, v)));
+// again: the item was refused last tick. Only a belt or bridge lane is trusted to take it now;
+// for pieces and machines the guess is rougher, so the item stays held until it really moves.
+function frontTakes(game, x, y, dir, item, v, enter, soon, again) {
   const t = entAt(game, x + DX[dir], y + DY[dir]);
   if (t === null) return false;
   switch (t.type) {
-    case 'belt': return dir !== (t.dir + 2) % 4 && laneRoom(t.items, v);
-    case 'bridge': return dir === t.dirH ? laneRoom(t.laneH, v) : dir === t.dirV ? laneRoom(t.laneV, v) : false;
+    case 'belt': return dir !== (t.dir + 2) % 4 && laneRoom(game, t.items, t.blockedKind, v, enter, soon, again);
+    case 'bridge':
+      return dir === t.dirH ? laneRoom(game, t.laneH, t.blockedKindH, v, enter, soon, again)
+        : dir === t.dirV ? laneRoom(game, t.laneV, t.blockedKindV, v, enter, soon, again) : false;
+  }
+  if (again) return false;
+  switch (t.type) {
     case 'tunnel_in': {
-      const p = game.ents.get(t.pair);
-      return dir === t.dir && p !== undefined && t.under.length < 4 * (Math.abs(p.x - t.x) + Math.abs(p.y - t.y));
+      const p = game.ents.get(t.pair), u = t.under;
+      // A full tunnel still takes one if its oldest item surfaces this tick.
+      return dir === t.dir && p !== undefined && (soon || u.length < 4 * (Math.abs(p.x - t.x) + Math.abs(p.y - t.y)) || u[0].left <= 1);
     }
-    case 'splitter': return dir === t.dir && t.hold === null;
-    case 'merger': return dir !== (t.dir + 2) % 4 && t.hold === null;
+    case 'splitter': return dir === t.dir && holdClears(game, t, v, soon);
+    case 'merger': return dir !== (t.dir + 2) % 4 && holdClears(game, t, v, soon);
     case 'storage': return t.queue.length < game.mods.storageCap;
     case 'hub': return true;
     case 'generator': return (item === 'coal' || (item === 'fuel_cell' && game.tier >= 11)) && t.fuel.coal + t.fuel.fuel_cell < BAL.genFuelMax;
@@ -213,9 +250,14 @@ function lane(game, items, x, y, inDir, dir, kind, va, v) {
   const n = items.length;
   if (n === 0) return;
   const f = items[0];
-  // A front item already at the waiting spot was refused this tick; letting it creep forward and
-  // snap back every tick would make every blocked belt wobble, so it stays put until taken.
-  let lim = !kind && Math.abs(f.pos - BAL.waitPos) > EPS && frontTakes(game, x, y, dir, f.item, v) ? Infinity : BAL.waitPos;
+  // Like stepLane: the front item is offered once it reaches the tile edge or the waiting spot;
+  // short of that it just moves on, and only has to be taken next tick.
+  const soon = f.pos + v < 1 - EPS && f.pos < BAL.waitPos - EPS;
+  // A refused front item stays put until taken; letting it creep forward and snap back every
+  // tick would make every blocked belt wobble.
+  const again = !kind && refused(game, f);
+  const held = !!kind || !frontTakes(game, x, y, dir, f.item, v, Math.max(0, f.pos + v - 1), soon && !again, again);
+  let lim = held ? BAL.waitPos : Infinity;
   for (let k = 0; k < n; k++) {
     const it = items[k];
     let p = it.pos + va;

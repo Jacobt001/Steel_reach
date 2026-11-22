@@ -12,9 +12,16 @@ const LO = 16, HI = 48, HI_FROM = 28; // px per tile in the cache; HI once tiles
 // stay alive, and at most two are built per frame (the LO chunk stands in meanwhile) so a zoom
 // across the threshold never stalls a frame.
 const HI_KEEP = 6, HI_PER_FRAME = 2;
+// After a chunk fails to build (canvas memory full), wait this many draws before trying again so
+// a full budget isn't hammered every frame.
+const RETRY_DRAWS = 60;
 
 const ORE_DARK = {};
 for (const k in ITEMS) ORE_DARK[k] = shade(ITEMS[k].color, -0.3);
+
+// Dropping the last reference isn't enough on iPhone: Safari counts a canvas's pixels against the
+// page's canvas memory until it is collected, so a dropped chunk is shrunk to nothing first (R23).
+function release(c) { c.width = 0; c.height = 0; }
 
 function makeCanvas(size) {
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(size, size);
@@ -43,6 +50,8 @@ function cornerRect(g, x, y, w, h, tl, tr, br, bl) {
 
 function buildChunk(world, cx, cy, res, grid) {
   const size = CH * res, canvas = makeCanvas(size), g = canvas.getContext('2d');
+  // iOS Safari answers null once the page's canvas memory is used up; the caller copes without it.
+  if (!g) { release(canvas); return null; }
   const x0 = cx * CH, y0 = cy * CH, ore = world.ore;
   const at = (x, y) => (x < 0 || y < 0 || x >= MAP || y >= MAP ? null : ore[idx(x, y)]);
 
@@ -101,12 +110,38 @@ export function createTerrain(world) {
   const lo = new Array(NCH * NCH).fill(null);
   const hi = new Map(); // chunk index -> { canvas, used }
   const vt = { x0: 0, y0: 0, x1: -1, y1: -1 };
-  let grid = null, frame = 0;
+  let grid = null, frame = 0, retryAt = 0;
+
+  // Least recently used HI chunks go first. The magnifier draws between main frames, so anything
+  // used by either of the last two draws counts as on screen and stays.
+  const trimHi = (keep) => {
+    while (hi.size > keep) {
+      let oldK = -1, oldU = Infinity;
+      for (const [key, e] of hi) if (e.used < oldU) { oldU = e.used; oldK = key; }
+      if (oldU >= frame - 1) break;
+      release(hi.get(oldK).canvas);
+      hi.delete(oldK);
+    }
+  };
+  // A failed build frees every HI chunk off screen and pauses building; the frame goes on with
+  // whatever chunks it has (a missing one just shows plain ground).
+  const build = (cx, cy, res) => {
+    if (frame < retryAt) return null;
+    const c = buildChunk(world, cx, cy, res, grid);
+    if (c === null) { retryAt = frame + RETRY_DRAWS; trimHi(0); }
+    return c;
+  };
 
   return {
     draw(ctx, cam, theme) {
       // The chunks bake in the grid colour, so a theme switch rebuilds them.
-      if (theme.grid !== grid) { lo.fill(null); hi.clear(); grid = theme.grid; }
+      if (theme.grid !== grid) {
+        for (let i = 0; i < lo.length; i++) if (lo[i] !== null) { release(lo[i]); lo[i] = null; }
+        for (const e of hi.values()) release(e.canvas);
+        hi.clear();
+        grid = theme.grid;
+        retryAt = 0;
+      }
       frame++;
       visibleTiles(cam, 0, vt);
       if (vt.x0 > vt.x1 || vt.y0 > vt.y1) return;
@@ -119,22 +154,18 @@ export function createTerrain(world) {
           let img = null;
           if (wantHi) {
             let e = hi.get(k);
-            if (!e && built < HI_PER_FRAME) { e = { canvas: buildChunk(world, cx, cy, HI, grid), used: 0 }; hi.set(k, e); built++; }
+            if (!e && built < HI_PER_FRAME) {
+              built++;
+              const c = build(cx, cy, HI);
+              if (c !== null) hi.set(k, (e = { canvas: c, used: 0 }));
+            }
             if (e) { e.used = frame; img = e.canvas; shown++; }
           }
-          if (!img) img = lo[k] ?? (lo[k] = buildChunk(world, cx, cy, LO, grid));
-          ctx.drawImage(img, cx * size + ox, cy * size + oy, size, size);
+          if (img === null) img = lo[k] ?? (lo[k] = build(cx, cy, LO));
+          if (img !== null) ctx.drawImage(img, cx * size + ox, cy * size + oy, size, size);
         }
       }
-      // Evict least recently used HI chunks. The magnifier draws between main frames, so anything
-      // used by either of the last two draws counts as on screen.
-      const keep = Math.max(HI_KEEP, shown);
-      while (hi.size > keep) {
-        let oldK = -1, oldU = Infinity;
-        for (const [key, e] of hi) if (e.used < oldU) { oldU = e.used; oldK = key; }
-        if (oldU >= frame - 1) break;
-        hi.delete(oldK);
-      }
+      trimHi(Math.max(HI_KEEP, shown));
     },
   };
 }

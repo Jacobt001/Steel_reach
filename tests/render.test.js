@@ -64,9 +64,18 @@ test('items interpolate, but never past the tile edge when the next tile cannot 
   place(g, 'belt', 11, 10, { dir: 1 });
   r = rec(); drawFrame(r.ctx, g, c, 0.9, {}, THEME);
   assert.ok(drawnAt(r.log, ...at(c, 10.89, 10.5)));
-  // A front item already waiting stays still even if the peek thinks the next tile has room.
+  // Landing exactly on the waiting spot doesn't mean refused: a flowing item does that too, so on
+  // the first tick it is seen there it glides on.
   b.items[0].pos = 0.875; r = rec(); drawFrame(r.ctx, g, c, 0.9, {}, THEME);
-  assert.ok(drawnAt(r.log, ...at(c, 10.875, 10.5)));
+  assert.ok(drawnAt(r.log, ...at(c, 10.965, 10.5)), 'first tick on the spot: still flowing');
+  // Still there a tick later, it was refused. A belt ahead with room behind its last item takes it
+  // (that check is exact), so it glides again; a piece or machine ahead keeps it held until it moves.
+  g.tick++; r = rec(); drawFrame(r.ctx, g, c, 0.9, {}, THEME);
+  assert.ok(drawnAt(r.log, ...at(c, 10.965, 10.5)), 'belt ahead has room: glides');
+  const sp = place(g, 'splitter', 41, 10, { dir: 1 }), e = place(g, 'belt', 40, 10, { dir: 1 }), c3 = cam(40.5, 10.5);
+  sp.hold = { item: 'gear', pos: 0.875 }; e.items.push({ item: 'iron_ore', pos: 0.875 });
+  r = rec(); drawFrame(r.ctx, g, c3, 0.9, {}, THEME); assert.ok(drawnAt(r.log, ...at(c3, 40.965, 10.5)), 'first sight: glides');
+  g.tick++; r = rec(); drawFrame(r.ctx, g, c3, 0.9, {}, THEME); assert.ok(drawnAt(r.log, ...at(c3, 40.875, 10.5)), 'refused into a piece: held');
   // Followers keep a full spacing behind the drawn front item.
   b.items[0].pos = 0.8; b.items.push({ item: 'iron_ore', pos: 0.55 }); place(g, 'belt', 11, 10, { dir: 1 });
   r = rec(); drawFrame(r.ctx, g, c, 0.5, {}, THEME);
@@ -181,4 +190,69 @@ test('readTheme reads the CSS custom properties', async () => {
   globalThis.document = { documentElement: {} }; globalThis.getComputedStyle = () => ({ getPropertyValue: (n) => vars[n] ?? '' });
   try { const t = readTheme(); assert.equal(t.bg, '#121815'); assert.equal(t.belt, '#2a332e'); assert.equal(t.bad, '#ff5a4e'); assert.equal(typeof t.itemEdge, 'string'); }
   finally { delete globalThis.document; delete globalThis.getComputedStyle; }
+});
+
+import { beltSpeed } from '../src/sim/belts.js';
+test('a released packed queue flows without frozen frames or jumps at every belt speed', () => {
+  // Levels 1-3 hand every queued tile on in the same tick, so every item moves every tick and
+  // every drawn frame must move it by a third of that. At level 0 the sim itself releases the
+  // queue a tile at a time (real one-tick stops, drawn still), but nothing may freeze past its
+  // stop and then leap to catch up.
+  for (const level of [0, 1, 2, 3]) {
+    const g = testGame(); g.mods.beltLevel = level;
+    for (let x = 10; x < 30; x++) place(g, 'belt', x, 10, { dir: 1 });
+    for (let x = 27; x < 30; x++) { const b = g.ents.get(g.grid[10 * 160 + x]); for (let k = 0; k < 4; k++) b.items.push({ item: 'iron_ore', pos: 0.875 - k * 0.25 }); }
+    const c = createCamera(2400, 200); c.x = 60; c.y = 10.5; c.z = 20;
+    const rowY = at(c, 0, 10.5)[1];
+    const frame = (alpha) => {
+      const r = rec(); drawFrame(r.ctx, g, c, alpha, {}, THEME);
+      return [...new Set(r.log.filter((l) => l[0] === 'arc' && near(l[2], rowY)).map((l) => Math.round(l[1] * 1e6) / 1e6))];
+    };
+    for (let t = 0; t < 5; t++) { tick(g); for (let f = 0; f < 3; f++) frame(f / 3); } // waiting at the dead end
+    for (let x = 30; x < 110; x++) place(g, 'belt', x, 10, { dir: 1 });
+    tick(g);
+    const d = (beltSpeed(g) / 3) * c.z;
+    let prev = null, still = 0, jumps = 0, matched = 0;
+    for (let t = 0; t < 40; t++) {
+      for (let f = 0; f < 3; f++) {
+        const cur = frame(f / 3);
+        if (prev) for (const x of cur) {
+          let best = null;
+          for (const p of prev) { const m = x - p; if (m > -1e-6 && m < 2.5 && (best === null || m < best)) best = m; }
+          if (best === null) continue;
+          matched++;
+          if (best < 1e-6) still++; else if (best > 2 * d + 1e-6) jumps++;
+        }
+        prev = cur;
+      }
+      tick(g);
+    }
+    assert.ok(matched > 1000, `level ${level}: only ${matched} item-frames compared`);
+    if (level > 0) assert.equal(still, 0, `level ${level}: ${still} frozen item-frames`);
+    assert.equal(jumps, 0, `level ${level}: ${jumps} jumps`);
+  }
+});
+
+test('terrain survives a canvas memory cap and frees the chunks it drops (R23)', () => {
+  const made = [];
+  let nullCtx = true;
+  const fakeCtx = new Proxy({}, { get: (t, k) => (k in t ? t[k] : () => {}), set: (t, k, v) => ((t[k] = v), true) });
+  globalThis.OffscreenCanvas = class { constructor(w, h) { this.width = w; this.height = h; made.push(this); } getContext() { return nullCtx ? null : fakeCtx; } };
+  try {
+    // iOS Safari answers getContext('2d') with null once canvas memory runs out.
+    const g = testGame(); const c = cam(80, 80);
+    assert.doesNotThrow(() => { for (const z of [44, 16, 72, 30]) for (let f = 0; f < 3; f++) { c.z = z; drawFrame(rec().ctx, g, c, 0, {}, THEME); } });
+    assert.ok(made.length > 0 && made.every((m) => m.width === 0 && m.height === 0), 'canvases that got no context are released');
+    nullCtx = false; made.length = 0;
+    const g2 = testGame(); c.z = 44; drawFrame(rec().ctx, g2, c, 0, {}, THEME);
+    const first = made.slice(); assert.ok(first.length > 0 && first.every((m) => m.width > 0));
+    const THEME2 = new Proxy({}, { get: (t, k) => (k === 'grid' ? 'other' : `c:${String(k)}`) });
+    drawFrame(rec().ctx, g2, c, 0, {}, THEME2);
+    assert.ok(first.every((m) => m.width === 0 && m.height === 0), 'a theme switch releases the old chunks');
+    c.z = 72;
+    for (let cy = 0; cy < 5; cy++) for (let cx = 0; cx < 5; cx++) { c.x = cx * 32 + 16; c.y = cy * 32 + 16; for (let f = 0; f < 3; f++) drawFrame(rec().ctx, g2, c, 0, {}, THEME2); }
+    const live = made.filter((m) => m.width === 32 * 48);
+    assert.ok(live.length <= 6, `${live.length} hi-res chunks still hold memory`);
+    assert.ok(made.filter((m) => m.width === 0 && m.height === 0).length >= 19, 'evicted chunks are released');
+  } finally { delete globalThis.OffscreenCanvas; }
 });
