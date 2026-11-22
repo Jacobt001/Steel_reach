@@ -1,7 +1,8 @@
-// Machine-side item handling shared by every machine: output ports and the storage box.
-import { edgeNeighbors, entAt } from '../game/state.js';
-import { offer, OK, BUSY, NEVER } from './offer.js';
-import { BAL, RECIPES, TPS } from '../config.js';
+// Machine-side item handling shared by every machine: intake (dead end, pass-by, overstock),
+// output ports, the status line, and the storage box.
+import { edgeNeighbors, entAt, CRAFTERS } from '../game/state.js';
+import { offer, OK, BUSY, NEVER, STALL } from './offer.js';
+import { BAL, RECIPES, TPS, ITEMS, BUILDINGS } from '../config.js';
 import { isUnlocked } from '../game/progress.js';
 
 // Cached per entity but only valid for one topology version, so erasing or placing a
@@ -84,6 +85,18 @@ function furnaceRecipeFor(game, item) {
   return null;
 }
 
+// Starved: some ingredient is short of one batch, so the machine can't run until it arrives.
+function starved(m, r) {
+  for (const k in r.in) if ((m.buf[k] ?? 0) < r.in[k]) return true;
+  return false;
+}
+
+// Holding some of an ingredient but not a whole batch of it (1 of 2 stone).
+function partBatch(m, r) {
+  for (const k in r.in) { const have = m.buf[k] ?? 0; if (have > 0 && have < r.in[k]) return true; }
+  return false;
+}
+
 export function acceptMachine(game, m, item, moveDir, pos, mode) {
   if (m.type === 'generator') {
     if (item !== 'coal' && !(item === 'fuel_cell' && game.tier >= 11)) return NEVER;
@@ -98,15 +111,71 @@ export function acceptMachine(game, m, item, moveDir, pos, mode) {
   } else {
     const r = m.recipe && RECIPES[m.recipe];
     if (!r || r.in[item] === undefined) {
+      if (m.type !== 'furnace' || furnaceRecipeFor(game, item) === null) return NEVER;
       // A furnace locked onto one ore reports BUSY for another smeltable ore so no false
-      // "can't use" marker shows; it will switch once it drains.
-      return m.type === 'furnace' && furnaceRecipeFor(game, item) !== null ? BUSY : NEVER;
+      // "can't use" marker shows; it will switch once it drains. A part batch (1 of 2 stone)
+      // never drains by itself, so then the belt must show why it is stuck.
+      return r && partBatch(m, r) ? NEVER : BUSY;
     }
   }
-  const need = RECIPES[m.recipe].in[item];
-  if ((m.buf[item] ?? 0) >= BAL.ingBatches * need) return BUSY;
-  m.buf[item] = (m.buf[item] ?? 0) + 1;
+  const r = RECIPES[m.recipe];
+  const have = m.buf[item] ?? 0;
+  if (have >= BAL.ingBatches * r.in[item]) {
+    // Ironline's stall: a dead-end belt's front item is full while the ingredient the machine
+    // is waiting for sits behind it. Taking surplus while starved keeps that belt moving, so
+    // only 99 surplus can block it, and STALL names the item on the belt.
+    if (mode !== 'deadEnd' || !starved(m, r)) return BUSY;
+    if (have >= BAL.overstock) return STALL;
+  }
+  m.buf[item] = have + 1;
   return OK;
+}
+
+// Machines that grab what they need from a belt running past them. The Hub and storage never
+// do: the Hub only takes belts pointing in, and a box has no recipe to choose by.
+const PULLERS = new Set([...CRAFTERS, 'generator']);
+export const isPuller = (ent) => PULLERS.has(ent.type);
+
+// Pass-by uses the normal cap only: overstock exists to unblock dead ends, and a pass-by belt
+// never blocks, so anything the machine is full of just rolls on to whoever needs it.
+export function pullPassBy(game, m, item) {
+  return PULLERS.has(m.type) && acceptMachine(game, m, item, 0, 0, 'passBy') === OK;
+}
+
+const itemName = (id) => ITEMS[id].name;
+
+// Plain status line for the inspector and map icons; the first matching problem wins.
+export function machineStatus(game, m) {
+  if (m.type === 'miner') return m.out.length >= BAL.outMax ? 'Output full' : 'Working';
+  if (!CRAFTERS.includes(m.type)) return 'Working'; // generator fuel and box contents show separately
+  // An idle furnace has no recipe yet, so it can't name an item; any ore starts it.
+  if (m.recipe === null) return 'Waiting for ore';
+  const r = RECIPES[m.recipe];
+  if (m.out.length + r.out > BAL.outMax) return 'Output full';
+  let missing = null, over = null;
+  for (const k in r.in) {
+    const have = m.buf[k] ?? 0;
+    if (missing === null && have < r.in[k]) missing = k;
+    // The biggest pile is the one clogging the belt, and it reaches 99 first.
+    if (have > BAL.ingBatches * r.in[k] && (over === null || have > m.buf[over])) over = k;
+  }
+  if (missing !== null) {
+    return over !== null ? `${m.buf[over]} ${itemName(over)}, waiting for ${itemName(missing)}` : `Waiting for ${itemName(missing)}`;
+  }
+  if (BUILDINGS[m.type].power > 0) {
+    if (m.net < 0) return `No power: ${Math.round(BAL.unpowered * 100)}% speed`;
+    if (m.pmult < 1) return `Low power: ${Math.round(m.pmult * 100)}% speed`;
+  }
+  return 'Working';
+}
+
+// The inspector's Clear: the way out of a true stall without deleting the machine.
+export function clearMachine(game, m) {
+  if (m.buf) m.buf = {};
+  if (m.out) m.out.length = 0;
+  if (m.prog !== undefined) m.prog = 0;
+  // Emptied, a furnace should take the next ore of any kind straight away, not one tick later.
+  if (m.type === 'furnace') m.recipe = null;
 }
 
 function pushOutput(game, m) {

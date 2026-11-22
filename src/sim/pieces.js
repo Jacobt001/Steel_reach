@@ -14,11 +14,9 @@ export function acceptBridge(game, e, item, moveDir, pos) {
 }
 
 export function stepBridge(game, e, v) {
-  const h = stepLane(game, e.x, e.y, e.laneH, e.dirH, v);
-  const w = stepLane(game, e.x, e.y, e.laneV, e.dirV, v);
-  if (h !== undefined) e.blockedH = h;
-  if (w !== undefined) e.blockedV = w;
-  e.blocked = e.blockedH ?? e.blockedV ?? null;
+  e.blockedH = stepLane(game, e.x, e.y, e.laneH, e.dirH, v);
+  e.blockedV = stepLane(game, e.x, e.y, e.laneV, e.dirV, v);
+  e.blocked = e.blockedH ?? e.blockedV;
 }
 
 // Tiles from entrance to exit, which is also the underground length in tiles.
@@ -56,8 +54,7 @@ export function acceptTunnelOut(game, e, item, pos, mode) {
 }
 
 export function stepTunnelOut(game, e, v) {
-  const r = stepLane(game, e.x, e.y, e.items, e.dir, v);
-  if (r !== undefined) e.blocked = r;
+  e.blocked = stepLane(game, e.x, e.y, e.items, e.dir, v);
 }
 
 // Splitters and mergers hold one item that crosses the tile. It enters near the far edge
