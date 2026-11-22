@@ -2,11 +2,11 @@
 import { rebuildOrder } from './order.js';
 import { stepBelt, beltSpeed } from './belts.js';
 import { stepBridge, stepTunnelIn, stepTunnelOut, stepSplitter, stepMerger } from './pieces.js';
-import { stepStorage } from './machines.js';
+import { stepStorage, stepMachine } from './machines.js';
 
 const STEPPERS = { belt: stepBelt, bridge: stepBridge, tunnel_in: stepTunnelIn, tunnel_out: stepTunnelOut, splitter: stepSplitter, merger: stepMerger };
-// Later tasks add miners, crafters and generators here; unknown types are skipped.
-const MACHINE_STEPPERS = { storage: stepStorage };
+// Generators burn fuel in the power task; until then they only take intake.
+const MACHINE_STEPPERS = { storage: stepStorage, miner: stepMachine, furnace: stepMachine, assembler: stepMachine, fabricator: stepMachine, foundry: stepMachine, refinery: stepMachine };
 
 export function tick(game) {
   if (game.topoDirty) rebuildOrder(game);
