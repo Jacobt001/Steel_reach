@@ -13,12 +13,16 @@ export const sizeOf = (type) => BUILDINGS[type === 'tunnel_in' || type === 'tunn
 // Fresh per-type contents; undo reuses this so a restored building starts empty.
 function initialState(type, props) {
   switch (type) {
-    case 'belt': return { items: [], blocked: null, side: 0 };
-    case 'bridge': return { dirH: props.dirH ?? 1, dirV: props.dirV ?? 0, laneH: [], laneV: [] };
+    // stall counts straight STALL refusals so a marker waits out a machine's normal refill.
+    case 'belt': return { items: [], blocked: null, blockedKind: null, stall: 0, side: 0 };
+    case 'bridge': return {
+      dirH: props.dirH ?? 1, dirV: props.dirV ?? 0, laneH: [], laneV: [], blocked: null, blockedKind: null,
+      blockedH: null, blockedKindH: null, stallH: 0, blockedV: null, blockedKindV: null, stallV: 0,
+    };
     case 'tunnel_in': return { pair: props.pair ?? 0, under: [] };
-    case 'tunnel_out': return { pair: props.pair ?? 0, items: [] };
-    case 'splitter': return { hold: null, rr: 0 };
-    case 'merger': return { hold: null, turn: 0 };
+    case 'tunnel_out': return { pair: props.pair ?? 0, items: [], blocked: null, blockedKind: null, stall: 0 };
+    case 'splitter': return { hold: null, rr: 0, blocked: null, blockedKind: null, stall: 0 };
+    case 'merger': return { hold: null, turn: 0, blocked: null, blockedKind: null, stall: 0 };
     case 'storage': return { queue: [], rr: 0 };
     case 'miner': return { ore: props.ore ?? null, tiles: props.tiles ?? 0, timer: 0, out: [], rr: 0 };
     case 'generator': return { fuel: { coal: 0, fuel_cell: 0 }, burn: 0, burnPower: 0, net: -1 };

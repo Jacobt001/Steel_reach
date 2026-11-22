@@ -35,12 +35,35 @@ export function acceptBelt(game, b, item, moveDir, pos) {
 
 const nameOf = (t) => BUILDINGS[t.type === 'tunnel_in' || t.type === 'tunnel_out' ? 'tunnel' : t.type]?.name ?? t.type;
 
-// Moves one lane whose tile is (x, y) and whose items travel along dir. Returns the blocked
-// text: a reason only while the front item waits on a target that refuses it, else null (an
-// empty lane included), so a marker can never outlive its cause.
-export function stepLane(game, x, y, items, dir, v) {
+// Where one lane keeps its marker: text for the inspector, kind ('never' | 'stall' | null) so the
+// renderer can colour it without parsing text, and its run of straight STALL refusals. A bridge
+// has two sets so one lane's flow never resets the other's count.
+export const LANE = { text: 'blocked', kind: 'blockedKind', run: 'stall' };
+export const LANE_H = { text: 'blockedH', kind: 'blockedKindH', run: 'stallH' };
+export const LANE_V = { text: 'blockedV', kind: 'blockedKindV', run: 'stallV' };
+
+// Records what happened to a lane's waiting front item this tick: r is the offer result, or OK
+// when nothing was waiting (moving, empty, taken, pulled). A marker shows only while that item
+// waits on a target that refuses it, so it can never outlive its cause. NEVER shows at once;
+// STALL only after BAL.stallShowTicks straight, or healthy lines would blink red every craft.
+export function markLane(e, f, r, t, item) {
+  if (r === STALL) {
+    const run = e[f.run] = (e[f.run] ?? 0) + 1;
+    if (run >= BAL.stallShowTicks) {
+      e[f.text] = `${nameOf(t)} is full of ${ITEMS[item].name}`; e[f.kind] = 'stall';
+      return;
+    }
+  } else if (e[f.run] !== 0) e[f.run] = 0;
+  if (r === NEVER) { e[f.text] = `${nameOf(t)} can't use ${ITEMS[item].name}`; e[f.kind] = 'never'; }
+  // The common case is a lane with nothing wrong, so it only reads unless a marker was up.
+  else if (e[f.kind] !== null) { e[f.text] = null; e[f.kind] = null; }
+}
+
+// Moves one lane whose tile is (x, y) and whose items travel along dir, and marks it on e
+// through the field set f.
+export function stepLane(game, x, y, items, dir, v, e, f) {
   const { spacing, waitPos } = BAL;
-  let limit = Infinity, blocked = null;
+  let limit = Infinity, r = OK, t = null, item = null;
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     let np = Math.min(it.pos + v, limit);
@@ -48,22 +71,22 @@ export function stepLane(game, x, y, items, dir, v) {
       // A front item that already sat at the wait spot keeps offering every tick, otherwise
       // a blocked queue would bounce between 0.875 and 0.975 and wobble visibly.
       if (np >= 1 - EPS || it.pos >= waitPos - EPS) {
-        const t = entAt(game, x + DX[dir], y + DY[dir]);
-        const r = t ? offer(game, t, it.item, dir, Math.max(0, np - 1), 'deadEnd') : BUSY;
+        t = entAt(game, x + DX[dir], y + DY[dir]);
+        r = t ? offer(game, t, it.item, dir, Math.max(0, np - 1), 'deadEnd') : BUSY;
         if (r === OK) {
-          items.shift(); blocked = null;
+          items.shift();
+          e[f.run] = 0; // a hand-over breaks any STALL run, even if the next front is refused
           i = -1; limit = Infinity; // the next item is the new front
           continue;
         }
         np = waitPos;
-        blocked = r === NEVER ? `${nameOf(t)} can't use ${ITEMS[it.item].name}`
-          : r === STALL ? `${nameOf(t)} is full of ${ITEMS[it.item].name}` : null;
-      } else blocked = null;
+        item = it.item;
+      }
     }
     it.pos = np;
     limit = np - spacing;
   }
-  return blocked;
+  markLane(e, f, r, t, item);
 }
 
 // A belt's left and right neighbours that pull from it, cached per topology version like machine
@@ -90,14 +113,14 @@ function pullOne(game, b, m) {
     if (!pullPassBy(game, m, items[i].item)) continue;
     items.splice(i, 1);
     // The next item trails by a full spacing, so nothing is left waiting at the tile end.
-    if (i === 0) b.blocked = null;
+    if (i === 0) markLane(b, LANE, OK);
     return true;
   }
   return false;
 }
 
 export function stepBelt(game, b, v) {
-  b.blocked = stepLane(game, b.x, b.y, b.items, b.dir, v);
+  stepLane(game, b.x, b.y, b.items, b.dir, v, b, LANE);
   // Pulls come after movement so the belt's own target always gets first refusal of the front item.
   if (!b.items.length) return;
   const s = sidePullers(game, b);

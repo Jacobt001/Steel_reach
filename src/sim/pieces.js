@@ -3,7 +3,7 @@
 import { BAL, DX, DY } from '../config.js';
 import { entAt } from '../game/state.js';
 import { NEVER, OK, BUSY, offer } from './offer.js';
-import { acceptItems, stepLane, beltSpeed, EPS } from './belts.js';
+import { acceptItems, stepLane, markLane, LANE, LANE_H, LANE_V, beltSpeed, EPS } from './belts.js';
 
 // A bridge is two independent one-tile belts sharing a footprint; a lane only takes items
 // already travelling along it, so the crossing flows can never mix.
@@ -14,9 +14,12 @@ export function acceptBridge(game, e, item, moveDir, pos) {
 }
 
 export function stepBridge(game, e, v) {
-  e.blockedH = stepLane(game, e.x, e.y, e.laneH, e.dirH, v);
-  e.blockedV = stepLane(game, e.x, e.y, e.laneV, e.dirV, v);
-  e.blocked = e.blockedH ?? e.blockedV;
+  stepLane(game, e.x, e.y, e.laneH, e.dirH, v, e, LANE_H);
+  stepLane(game, e.x, e.y, e.laneV, e.dirV, v, e, LANE_V);
+  // One marker per tile; a lane that can never move outranks one that is only full.
+  const h = e.blockedKindH === 'never' || (e.blockedKindH !== null && e.blockedKindV !== 'never');
+  e.blocked = h ? e.blockedH : e.blockedV;
+  e.blockedKind = h ? e.blockedKindH : e.blockedKindV;
 }
 
 // Tiles from entrance to exit, which is also the underground length in tiles.
@@ -54,27 +57,35 @@ export function acceptTunnelOut(game, e, item, pos, mode) {
 }
 
 export function stepTunnelOut(game, e, v) {
-  e.blocked = stepLane(game, e.x, e.y, e.items, e.dir, v);
+  stepLane(game, e.x, e.y, e.items, e.dir, v, e, LANE);
 }
 
 // Splitters and mergers hold one item that crosses the tile. It enters near the far edge
 // (1 - spacing) whatever pos was offered: crossing the whole tile would cap the piece at
 // 2 items/s, while this lets it pass roughly one item per spacing of travel.
+// The hold is marked with the same texts and rules as a belt lane.
 function stepHold(game, e, v, targets) {
   const h = e.hold;
-  if (!h) return;
   const { waitPos } = BAL;
   const np = h.pos + v;
   // Same rule as a belt's front item: offer on arrival, and keep offering once waiting so a
   // blocked hold doesn't bounce between waitPos and the tile edge.
-  if (np < 1 - EPS && h.pos < waitPos - EPS) { h.pos = np; return; }
+  if (np < 1 - EPS && h.pos < waitPos - EPS) { h.pos = np; markLane(e, LANE, OK); return; }
+  let busy = false, by = null, r = BUSY;
   for (const t of targets) {
-    if (offer(game, t.ent, h.item, t.dir, Math.max(0, np - 1), 'deadEnd') === OK) {
+    const res = offer(game, t.ent, h.item, t.dir, Math.max(0, np - 1), 'deadEnd');
+    if (res === OK) {
       e.hold = null;
+      markLane(e, LANE, OK);
       return t.done?.();
     }
+    if (res === BUSY) busy = true;
+    // The front output's reason wins, otherwise the first output that refused.
+    else if (by === null || t.dir === e.dir) { by = t.ent; r = res; }
   }
   h.pos = waitPos;
+  // Marked only when every output refuses: an output that is merely busy will take it later.
+  markLane(e, LANE, busy || by === null ? BUSY : r, by, h.item);
 }
 
 export function acceptSplitter(game, e, item, moveDir) {
@@ -85,7 +96,7 @@ export function acceptSplitter(game, e, item, moveDir) {
 }
 
 export function stepSplitter(game, e, v) {
-  if (!e.hold) return;
+  if (!e.hold) return markLane(e, LANE, OK);
   // Left, front, right, rotated to start at rr so refusals just fall through to the next output.
   const outs = [(e.dir + 3) % 4, e.dir, (e.dir + 1) % 4];
   const targets = [];
@@ -132,7 +143,7 @@ export function acceptMerger(game, e, item, moveDir) {
 }
 
 export function stepMerger(game, e, v) {
-  if (!e.hold) return;
+  if (!e.hold) return markLane(e, LANE, OK);
   const ent = entAt(game, e.x + DX[e.dir], e.y + DY[e.dir]);
   stepHold(game, e, v, ent ? [{ ent, dir: e.dir }] : []);
 }

@@ -136,4 +136,7 @@ export const BAL = {
   beltTilesPerSec: [2, 3, 4, 5], spacing: 0.25, waitPos: 0.875, ingBatches: 2, outMax: 4, overstock: 99,
   storageCap: 200, tunnelGap: 4, minerSecFull: 1.0, genFuelMax: 10, coalSec: 4, coalPower: 20,
   cellSec: 60, cellPower: 200, poleReach: 8, coverHalf: 3, unpowered: 0.25, undoMax: 20, autosaveMs: 10000,
+  // A machine fed by one belt per ingredient fills each buffer every craft, so a STALL refusal
+  // only shows as a marker once it has lasted 5 s straight (controller ruling R19).
+  stallShowTicks: 100,
 };

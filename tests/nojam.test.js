@@ -138,3 +138,64 @@ test('machineStatus priority and clearMachine', () => {
   clearMachine(g, fu); assert.deepEqual([fu.buf, fu.out, fu.prog, fu.recipe], [{}, [], 0, null]);
   f.prog = 7; clearMachine(g, f); assert.deepEqual([f.buf, f.out, f.prog, f.recipe], [{}, [], 0, 'robot_arm']);
 });
+
+// Fix round 1. R19: a STALL marker shows only after 100 straight STALL refusals. R20: splitters
+// and mergers show their reason too. Every marker carries blockedKind for the renderer.
+test('R19: a healthy line with one belt per ingredient never blinks a STALL marker; a true stall shows after 100 ticks', () => {
+  const g = testGame(); const a = place(g,'assembler',22,20,{recipe:'steel'});
+  place(g,'belt',21,21,{dir:1}); place(g,'belt',21,20,{dir:1}); place(g,'belt',24,20,{dir:1}); // iron in, coal in, output
+  const iron = entAt(g,21,21); let coal = true, marks = 0;
+  const step = (t) => { feed(g,21,21,['iron_plate']); if (coal && t % 100 === 0) feed(g,21,20,['coal']); tick(g); drain(g,24,20); };
+  for (let t = 0; t < 20000; t++) { step(t); if (iron.blocked !== null) marks++; }
+  assert.equal(marks, 0); assert.ok(g.stats.made.steel >= 190, `made ${g.stats.made.steel}`); // coal-limited: 0.2/s
+  coal = false; // now a true stall: iron sits at 99 with no coal coming
+  for (let k = 0; k < 2000 && iron.stall !== 99; k++) step(1);
+  assert.equal(iron.stall, 99); assert.equal(iron.blocked, null); assert.equal(iron.blockedKind, null);
+  step(1); assert.equal(iron.blocked, 'Assembler is full of Iron plate'); assert.equal(iron.blockedKind, 'stall');
+  assert.equal(machineStatus(g, a), '99 Iron plate, waiting for Coal');
+});
+test('R19: bridge lanes keep separate stall counts; the entity prefers a never marker', () => {
+  const g = testGame(); place(g,'fabricator',40,40,{recipe:'motor'}); place(g,'furnace',38,39); // furnace covers (39,40)
+  const br = place(g,'bridge',39,41,{dirH:1,dirV:0}); place(g,'belt',38,41,{dir:1}); place(g,'belt',39,42,{dir:0});
+  for (let t = 0; t < 1000; t++) { feed(g,38,41,['steel']); feed(g,39,42,['coal']); tick(g); }
+  assert.equal(br.blockedH, 'Fabricator is full of Steel'); assert.equal(br.blockedKindH, 'stall');
+  assert.equal(br.blockedV, "Furnace can't use Coal"); assert.equal(br.blockedKindV, 'never');
+  assert.equal(br.blocked, "Furnace can't use Coal"); assert.equal(br.blockedKind, 'never');
+});
+test('R19: a tunnel exit into a stalled machine gets the stall marker', () => {
+  const g = testGame(); place(g,'fabricator',40,40,{recipe:'motor'}); place(g,'belt',35,41,{dir:1});
+  assert.ok(place(g,'tunnel',36,41,{dir:1,exit:[39,41]}));
+  for (let t = 0; t < 1000; t++) { feed(g,35,41,['steel']); tick(g); }
+  const out = entAt(g,39,41); assert.equal(out.type, 'tunnel_out');
+  assert.equal(out.blocked, 'Fabricator is full of Steel'); assert.equal(out.blockedKind, 'stall');
+});
+test('R20: a merger into a furnace names the refused item, and clears once the hold moves on', () => {
+  const g = testGame(); place(g,'belt',8,10,{dir:1}); const mg = place(g,'merger',9,10,{dir:1}); place(g,'furnace',10,10);
+  assert.equal(mg.blocked, null); assert.equal(mg.blockedKind, null);
+  for (let t = 0; t < 100; t++) { feed(g,8,10,['coal']); tick(g); }
+  assert.equal(mg.blocked, "Furnace can't use Coal"); assert.equal(mg.blockedKind, 'never'); assert.equal(entAt(g,8,10).blocked, null);
+  erase(g,10,10); place(g,'belt',10,10,{dir:1}); tick(g); tick(g);
+  assert.equal(mg.blocked, null); assert.equal(mg.blockedKind, null); assert.ok(entAt(g,10,10).items.some((it) => it.item === 'coal'));
+});
+test('R20: a merger into a stalled machine shows the stall marker only after 100 ticks', () => {
+  const g = testGame(); place(g,'belt',38,41,{dir:1}); const mg = place(g,'merger',39,41,{dir:1}); const f = place(g,'fabricator',40,40,{recipe:'motor'});
+  for (let k = 0; k < 2000 && mg.stall !== 99; k++) { feed(g,38,41,['steel']); tick(g); }
+  assert.equal(f.buf.steel, 99); assert.equal(mg.stall, 99); assert.equal(mg.blocked, null);
+  tick(g); assert.equal(mg.blocked, 'Fabricator is full of Steel'); assert.equal(mg.blockedKind, 'stall');
+});
+test('R20: a splitter is marked only when every output refuses; a busy output means it is just waiting', () => {
+  const g = testGame(); place(g,'belt',8,10,{dir:1}); const sp = place(g,'splitter',9,10,{dir:1}); place(g,'furnace',10,10);
+  place(g,'belt',9,9,{dir:0}); // left output takes everything the furnace refuses
+  let marks = 0; for (let t = 0; t < 400; t++) { feed(g,8,10,['coal']); tick(g); drain(g,9,9); if (sp.blocked !== null) marks++; }
+  assert.equal(marks, 0);
+  for (let t = 0; t < 100; t++) { feed(g,8,10,['coal']); tick(g); } // left output backs up: BUSY, not a refusal
+  assert.equal(entAt(g,9,9).items.length, 4); assert.equal(sp.blocked, null); assert.equal(sp.blockedKind, null);
+  erase(g,9,9); tick(g); // only the furnace is left, and it refuses
+  assert.equal(sp.blocked, "Furnace can't use Coal"); assert.equal(sp.blockedKind, 'never');
+});
+test('blockedKind: never at once on a dead-end belt, null when a side machine pulls the front item', () => {
+  const g = testGame(); place(g,'belt',9,10,{dir:1}); place(g,'furnace',10,10); const a = place(g,'assembler',8,8,{recipe:'gear'});
+  for (let t = 0; t < 400; t++) { feed(g,9,10,['iron_plate']); tick(g); }
+  const b = entAt(g,9,10); assert.equal(b.blockedKind, 'never');
+  clearMachine(g, a); tick(g); assert.equal(b.blocked, null); assert.equal(b.blockedKind, null); assert.equal(b.stall, 0);
+});
