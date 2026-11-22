@@ -421,3 +421,35 @@ test('Fix 1: a staggered pinch with no pending state places, erases and previews
   assert.equal(belts(h.game).length, 2); assert.equal(h.game.undo.length, 0);
   assert.equal(entAt(h.game, 61, 61).dir, 1);
 });
+
+test('M4: double tap on the two-tap belt end point keeps the start; on a new tile it still restarts', () => {
+  const h = mk([61, 61]); h.t.setTool('belt');
+  doubleTap(h, 60, 60); tap(h, 63, 62);
+  const l = preview(h.t); assert.equal(l.length, 6);
+  doubleTap(h, 63, 62);
+  assert.deepEqual(preview(h.t), l, 'the line is unchanged');
+  assert.deepEqual([h.t.view.selected.x, h.t.view.selected.y], [60, 60]);
+  doubleTap(h, 62, 63); // elsewhere: a deliberate new start
+  assert.deepEqual(preview(h.t).map(p => [p[0], p[1]]), [[62, 63]]);
+  assert.deepEqual([h.t.view.selected.x, h.t.view.selected.y], [62, 63]);
+});
+
+test('I3: auto-pan waits when a drag starts in the edge zone, arms after 250 ms or once out of the zone, and never runs for erase', () => {
+  const h = mk(); h.t.setTool('belt'); const g = h.t.gestures; const [, ay] = centre(h.cam, 80, 76);
+  // starts 10 px from the right edge
+  g.down({id:1,x:380,y:ay,t:0}); g.move({id:1,x:381,y:ay+20,t:16}); const x0 = h.cam.x;
+  for (let t = 32; t < 240; t += 16) h.t.update(t);
+  assert.equal(h.cam.x, x0, 'no scroll in the first 250 ms');
+  for (let t = 240; t <= 600; t += 16) h.t.update(t);
+  assert.ok(h.cam.x > x0 + 1, 'scrolls after the dwell');
+  g.up({id:1,x:381,y:ay+20,t:650});
+  // out of the zone once, back in: arms immediately
+  const h2 = mk(); h2.t.setTool('belt'); const g2 = h2.t.gestures;
+  g2.down({id:1,x:380,y:ay,t:0}); g2.move({id:1,x:200,y:ay,t:16}); g2.move({id:1,x:380,y:ay,t:32});
+  const y2 = h2.cam.x; h2.t.update(48); h2.t.update(64); assert.ok(h2.cam.x > y2);
+  // erase: never
+  const h3 = mk(); h3.t.setTool('erase'); const g3 = h3.t.gestures;
+  g3.down({id:1,x:200,y:ay,t:0}); g3.move({id:1,x:380,y:ay,t:16}); const x3 = h3.cam.x;
+  for (let t = 32; t <= 1500; t += 16) h3.t.update(t);
+  assert.equal(h3.cam.x, x3, 'erase does not auto-pan'); g3.up({id:1,x:380,y:ay,t:1600});
+});

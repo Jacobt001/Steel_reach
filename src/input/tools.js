@@ -13,6 +13,9 @@ const EDGE_PX = 32;
 // Auto-pan speed in screen px/s, from the zone's inner line to the very edge. Screen px rather
 // than tiles, so zooming out for a long haul also makes the scroll cover more ground.
 const EDGE_SLOW = 120, EDGE_FAST = 480;
+// A drag that starts inside the edge zone (or an erase, never) must not scroll the map away at
+// once; it waits this long, or until the finger has been out of the zone once.
+const EDGE_DWELL_MS = 250;
 const MAX_STEP_MS = 50; // a stalled frame or late event must not fling the map
 // Clockwise quarter turns of a bridge: each turn moves the east/west lane onto north/south and back.
 const BRIDGE_TURNS = [[1, 0], [1, 2], [3, 2], [3, 0]];
@@ -124,9 +127,17 @@ export function createTools({ game, cam, ui, sfx }) {
     showBelt(pendingPath());
   }
 
+  // A double tap arrives as a tap and then a doubleTap on the same tile, so by then the end is
+  // already there: what matters is where the end was before the pair began. Double-tapping the
+  // existing end point (a fumbled confirm) must not collapse the line to one tile at that spot.
+  let endBeforeTap = null;
   function beltTap(tx, ty, double) {
-    if (double) setPending({ start: [tx, ty], end: [tx, ty], flip: false });
-    else if (pending && pending.start) setPending({ ...pending, end: [tx, ty] });
+    if (double && !(pending?.start && endBeforeTap && endBeforeTap[0] === tx && endBeforeTap[1] === ty)) {
+      setPending({ start: [tx, ty], end: [tx, ty], flip: false });
+      return;
+    }
+    if (!double) endBeforeTap = pending ? pending.end : null;
+    if (pending && pending.start) setPending({ ...pending, end: [tx, ty] });
     else setPending({ start: null, end: [tx, ty], flip: false });
   }
 
@@ -191,7 +202,7 @@ export function createTools({ game, cam, ui, sfx }) {
     // happened (cancelDrag puts these back). A pending two-tap start must survive a pan/zoom
     // between its two taps, and fingers that land tens of ms apart often start a drag first.
     const saved = { pending, ghost: view.ghost, tunnelIn, tunnelExits: view.tunnelExits };
-    drag = { kind: k, fx: x, fy: y, tx, ty, saved };
+    drag = { kind: k, fx: x, fy: y, tx, ty, saved, armed: !edgeVel(x, y), edgeAt: null };
     view.magnifier = { x, y, tile: [tx, ty] };
     if (k === 'belt') {
       setPending(null); // drawing by hand replaces any tap preview
@@ -281,14 +292,23 @@ export function createTools({ game, cam, ui, sfx }) {
 
   // Shared by pointer moves and update(): one clock, so a frame and an event in the same
   // instant never both scroll for the same time.
+  const edgeVel = (x, y) => [edgeSpeed(x, insets.left, cam.vw - insets.right), edgeSpeed(y, insets.top, cam.vh - insets.bottom)];
+
   function autoPan(t) {
     if (typeof t !== 'number') return;
     const dt = clamp(t - clock, 0, MAX_STEP_MS) / 1000;
     clock = t;
-    if (!drag || drag.kind === 'pan' || dt === 0) return;
-    const vx = edgeSpeed(drag.fx, insets.left, cam.vw - insets.right);
-    const vy = edgeSpeed(drag.fy, insets.top, cam.vh - insets.bottom);
-    if (!vx && !vy) return;
+    // Erase never scrolls: sweeping a belt near the screen edge must not run away over the map.
+    if (!drag || drag.kind === 'pan' || drag.kind === 'erase') return;
+    const [vx, vy] = edgeVel(drag.fx, drag.fy);
+    if (!vx && !vy) { drag.armed = true; drag.edgeAt = null; return; }
+    if (!drag.armed) {
+      // Started in the zone (a tap meant for the toolbar's neighbour tile): wait out a dwell.
+      drag.edgeAt ??= t;
+      if (t - drag.edgeAt < EDGE_DWELL_MS) return;
+      drag.armed = true;
+    }
+    if (dt === 0) return;
     panBy(cam, -vx * dt, -vy * dt);
     dragTo(drag.fx, drag.fy); // the map slid under a still finger, so it may be over a new tile
   }
