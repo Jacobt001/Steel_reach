@@ -53,6 +53,10 @@ async function boot() {
   const actions = {
     newGame: () => session.newGame(),
     copySaveCode: () => session.copyCode(),
+    saveCodeText: () => session.codeText(),
+    // Plain text copy for a backup's code (inside a tap); rejects so the UI leaves it to select by hand.
+    copyText: (t) => (navigator.clipboard?.writeText ? navigator.clipboard.writeText(t) : Promise.reject(new Error('No clipboard'))),
+    listBackups: () => session.backups(),
     loadSaveCode: (text) => session.loadCode(text),
     setSfx: (on) => sfx.setEnabled(on),
     perf: () => ({ fps: loop.fps, tickMs: loop.tickMs, buildings: session.game.ents.size - 1, items: countItems(session.game) }),
@@ -144,15 +148,15 @@ async function boot() {
 
   // ---- per frame
   function drainEvents(g) {
-    const ev = g.events;
-    if (!ev.length) return;
+    if (!g.events.length) return;
+    // Copied and cleared first: a handler that throws must not leave the event to repeat every frame.
+    const ev = g.events.splice(0);
     for (const e of ev) {
       if (e.type === 'tierUp') ui.showTierUp(e.tier);
       else if (e.type === 'complete') ui.showComplete();
       else if (e.type === 'toast') ui.toast(e.text);
       // 'research': ui.js already played the sound and toasted when the player bought it (ruling 12).
     }
-    ev.length = 0;
   }
 
   loop = createLoop({

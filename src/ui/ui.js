@@ -560,6 +560,52 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
     }, { kind: 'inspect', ent });
   }
 
+  // --- sheets: a save code to select by hand (clipboard refused) and backup recovery ----------
+  // A readonly, pre-selected box with Select all (long-press then Copy), plus an optional Copy
+  // button that tries the clipboard again inside the tap.
+  function codeBox(code, { copy = false } = {}) {
+    const box = h('textarea', { readonly: true, rows: '4', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Save code' });
+    box.value = code;
+    const selectAll = () => { box.focus(); box.select(); try { box.setSelectionRange(0, code.length); } catch { /* not selectable here */ } };
+    const all = btn('btn wide', 'Select all');
+    on(all, selectAll);
+    const nodes = [box, all];
+    if (copy) {
+      const c = btn('btn wide', 'Copy');
+      on(c, () => {
+        let res;
+        try { res = actions.copyText ? actions.copyText(code) : Promise.reject(new Error('No copy action')); } catch (err) { res = Promise.reject(err); }
+        Promise.resolve(res).then(() => toast('Copied'), () => { selectAll(); toast('Press and hold the code, then tap Copy'); });
+      });
+      nodes.push(c);
+    }
+    return { nodes, selectAll };
+  }
+  function openCodeSheet(code) {
+    openSheet('Save code', () => {
+      const b = codeBox(code);
+      return { nodes: [h('p', { class: 'note', text: 'Copying was blocked here. Tap Select all, then press and hold the code and tap Copy.' }), ...b.nodes] };
+    }, { kind: 'code' });
+    // Pre-selected, so a long-press goes straight to Copy.
+    sheetBody.querySelector('textarea')?.select();
+  }
+  function openBackups() {
+    openSheet('Recover backup', () => {
+      const nodes = [h('p', { class: 'note', text: 'Saves that were set aside instead of being written over. Load one to play it, or copy the code to keep.' })];
+      for (const b of actions.listBackups?.() ?? []) {
+        nodes.push(h('h3', { text: b.label }), ...codeBox(b.code, { copy: true }).nodes);
+        const load = btn('btn wide');
+        twoTap(load, 'Load this backup', 'Tap again to replace your game', () => {
+          Promise.resolve().then(() => actions.loadSaveCode?.(b.code)).then(
+            (res) => { if (res && res.ok === false) toast(res.reason || 'Not a Steelreach save code'); else { if (sheet?.kind === 'backups') closeSheet(); toast('Save loaded'); } },
+            (err) => toast(err?.message || 'Not a Steelreach save code'));
+        });
+        nodes.push(load);
+      }
+      return { nodes };
+    }, { kind: 'backups' });
+  }
+
   // --- sheets: menu --------------------------------------------------------------------------
   function openMenu() {
     openSheet('Menu', () => {
@@ -582,8 +628,16 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
         let res;
         try { res = actions.copySaveCode ? actions.copySaveCode() : Promise.reject(new Error('No copy action')); }
         catch (err) { res = Promise.reject(err); }
-        Promise.resolve(res).then(() => toast('Save code copied'), () => toast("Couldn't copy the save code"));
+        // If the clipboard refuses (an iframe without clipboard-write), the code is shown to select by hand.
+        Promise.resolve(res).then(() => toast('Save code copied'), () => {
+          Promise.resolve().then(() => actions.saveCodeText?.()).then(
+            (code) => (code ? openCodeSheet(code) : toast("Couldn't copy the save code")),
+            () => toast("Couldn't copy the save code"));
+        });
       });
+      const backups = actions.listBackups?.() ?? [];
+      const recover = btn('btn wide', 'Recover backup');
+      on(recover, () => openBackups());
       const paste = h('textarea', { placeholder: 'Paste a save code here', rows: '3', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Save code' });
       const load = btn('btn wide');
       let loading = false;
@@ -600,6 +654,7 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
         if (!paste.value.trim()) { toast('Paste a save code first'); return false; }
         return true;
       });
+      show(recover, backups.length > 0);
       const perfBtn = btn('btn wide', 'Performance');
       const perfBox = h('div', { class: 'perf' });
       const perfCells = [h('span'), h('span'), h('span'), h('span')];
@@ -631,6 +686,7 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
       return {
         nodes: [sound, overlay, focus, h('h3', { text: 'Save code' }), copy, paste, load,
           h('p', { class: 'note', text: 'Moves your game between the Claude link and the Home Screen app.' }),
+          recover,
           h('h3', { text: 'More' }), perfBtn, perfBox, fresh],
         update,
       };

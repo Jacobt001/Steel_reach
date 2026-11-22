@@ -1,6 +1,6 @@
 import { test } from 'node:test'; import assert from 'node:assert/strict';
 import {
-  bootLocal, createSession, hasProgress, randomSeed, freshGame, SAVE_KEY, BACKUP_KEY, ACCOUNT_BACKUP_KEY, RETRY_MS,
+  bootLocal, createSession, hasProgress, randomSeed, freshGame, SAVE_KEY, BACKUP_KEY, BACKUP_KEY_2, ACCOUNT_BACKUP_KEY, ACCOUNT_BACKUP_KEY_2, RETRY_MS, listBackups,
 } from '../src/session.js';
 import { createGame, addEnt } from '../src/game/state.js';
 import { doAction } from '../src/game/undo.js';
@@ -78,6 +78,15 @@ async function start({ account = null, timers = fakeTimers(), rand = Math.random
   return { b, s, h, local, timers };
 }
 const localSave = async () => decodeSaveCode(ST.getItem(SAVE_KEY));
+// Compression runs off-thread, so how many turns a write takes varies; poll instead of guessing.
+async function localSeedIs(seed) {
+  for (let i = 0; i < 200; i++) {
+    const code = ST.getItem(SAVE_KEY);
+    if (code && (await decodeSaveCode(code).catch(() => null))?.seed === seed) return true;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return false;
+}
 
 test('seeds are safe integers that a save round-trips (ruling 6)', () => {
   for (const r of [0, 0.5, 0.999999999999]) {
@@ -239,7 +248,7 @@ test('account newer but the player has built: ask; the account is not written un
     assert.equal(acct.writes.length, 0, 'account untouched while the choice is open');
     assert.equal((await localSave()).seed, 7, 'the phone keeps saving the current game');
     assert.equal((await decodeSaveCode(ST.getItem(ACCOUNT_BACKUP_KEY))).seed, 8, 'insurance copy if they never answer');
-    h.choices[0][pick]();
+    await h.choices[0][pick]();
     await s.flush();
     assert.equal(s.game.seed, pick === 'load' ? 8 : 7, pick);
     assert.equal(acct.writes.at(-1).seed, s.game.seed, pick);
@@ -313,8 +322,7 @@ test('New game keeps sound and power overlay, drops per-game hints and recipes (
   assert.ok(Number.isSafeInteger(s.game.seed));
   assert.equal(s.game.ents.size, 1);
   assert.deepEqual(s.game.settings, { sfx: false, lastRecipe: {}, powerOverlay: true });
-  await drain();
-  assert.equal((await localSave()).seed, s.game.seed);
+  assert.ok(await localSeedIs(s.game.seed), 'saved at once');
 });
 
 test('Load save code: a bad paste or a newer save keeps the current game; a good one replaces it (ruling 11)', async () => {
@@ -331,8 +339,7 @@ test('Load save code: a bad paste or a newer save keeps the current game; a good
   assert.equal(s.game.seed, 9);
   assert.equal(s.game.ents.size, 4);
   assert.equal(h.swaps.at(-1), s.game);
-  await drain();
-  assert.equal((await localSave()).seed, 9);
+  assert.ok(await localSeedIs(9), 'saved at once');
 });
 
 test('copy: ClipboardItem write starts inside the tap, with a promise of the code (ruling 17)', async () => {
@@ -364,4 +371,72 @@ test('copy without ClipboardItem: writeText with the latest code the saver made;
   assert.equal((await decodeSaveCode(texts.at(-1))).seed, s.game.seed);
   const none = createSession({ game: s.game, savedAt: -Infinity, local: createLocalStore(), storage: ST, hooks: hooks().hooks, clipboard: undefined });
   await assert.rejects(none.copyCode());
+});
+
+test('an older account save that cannot be loaded is backed up and never overwritten (v2, damaged)', async () => {
+  for (const bad of [{ v: 2 }, { tier: 'x', ents: 'nope' }]) {
+    fakeStorage();
+    ST.setItem(SAVE_KEY, await encodeSaveCode(saveOf(factory(7), 500)));
+    const acct = fakeAccount([{ ...saveOf(factory(8), 100), ...bad }]); // older than the phone save
+    const { s, h } = await start({ account: Promise.resolve(acct) });
+    await s.accountDone;
+    assert.equal(h.swaps.length, 0);
+    assert.equal(h.toasts.length, 1);
+    assert.match(h.toasts[0], /^Account save .* — kept a backup$/);
+    const kept = await decodeSaveCode(ST.getItem(ACCOUNT_BACKUP_KEY));
+    assert.equal(kept.seed, 8);
+    await s.flush();
+    assert.equal(acct.writes.length, 1, 'written only after the backup stuck');
+  }
+});
+
+test('an unloadable account save with no backup possible is never overwritten', async () => {
+  fakeStorage({ failKeys: [ACCOUNT_BACKUP_KEY, ACCOUNT_BACKUP_KEY_2] });
+  ST.setItem(SAVE_KEY, await encodeSaveCode(saveOf(factory(7), 500)));
+  const acct = fakeAccount([{ ...saveOf(factory(8), 100), v: 2 }]);
+  const { s, h } = await start({ account: Promise.resolve(acct) });
+  await s.accountDone;
+  await s.flush();
+  assert.equal(acct.writes.length, 0);
+  assert.match(h.toasts[0], /account saving paused/);
+});
+
+test('Load account save backs up the replaced game first; Keep does not touch the backups', async () => {
+  fakeStorage();
+  ST.setItem(SAVE_KEY, await encodeSaveCode(saveOf(factory(7), 500)));
+  let answer;
+  const acct = fakeAccount([saveOf(factory(8), 900)]);
+  acct.load = () => new Promise((r) => { answer = () => { acct.answered = true; r(saveOf(factory(8), 900)); }; });
+  const { s, h } = await start({ account: Promise.resolve(acct) });
+  doAction(s.game, () => addEnt(s.game, 'belt', 40, 40, { dir: 1 }));
+  s.frame();
+  answer();
+  await s.accountDone;
+  assert.equal(ST.getItem(BACKUP_KEY), null);
+  await h.choices[0].load();
+  const kept = await decodeSaveCode(ST.getItem(BACKUP_KEY));
+  assert.equal(kept.seed, 7);
+  assert.ok(kept.ents.some((e) => e[1] === 40 && e[2] === 40), 'includes the belt built since opening');
+  assert.equal(s.game.seed, 8);
+});
+
+test('backups keep two slots, never overwrite a different code, never rewrite an identical one', async () => {
+  fakeStorage();
+  const codes = [];
+  for (const seed of [1, 2, 3]) codes.push(await encodeSaveCode(saveOf(factory(seed), 100 + seed)));
+  // Three newer-version phone saves in a row, each found at boot.
+  for (const [i, code] of codes.entries()) {
+    ST.setItem(SAVE_KEY, await encodeSaveCode({ ...saveOf(factory(i + 1), 100 + i), v: 2 }));
+    ST.log.length = 0;
+    await bootLocal({ local: createLocalStore(), storage: ST });
+    if (i === 0) assert.deepEqual(ST.log, [BACKUP_KEY]);
+    if (i === 1) assert.deepEqual(ST.log, [BACKUP_KEY_2, BACKUP_KEY], 'the first code moves to slot 2 before slot 1 is reused');
+    if (i === 2) assert.deepEqual(ST.log, [BACKUP_KEY_2, BACKUP_KEY], 'full: the older is rotated out, the newest leads');
+  }
+  assert.equal((await decodeSaveCode(ST.getItem(BACKUP_KEY))).seed, 3);
+  assert.equal((await decodeSaveCode(ST.getItem(BACKUP_KEY_2))).seed, 2, 'seed 1 is rotated out');
+  ST.log.length = 0;
+  await bootLocal({ local: createLocalStore(), storage: ST }); // same seed-3 code again
+  assert.deepEqual(ST.log, [], 'an identical code is never written twice');
+  assert.deepEqual(listBackups(ST).map((b) => b.key), [BACKUP_KEY, BACKUP_KEY_2]);
 });
