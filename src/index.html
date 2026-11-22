@@ -10,6 +10,43 @@
 </head>
 <body>
 <canvas id="game"></canvas>
+<!-- Static UI skeleton; ui.js fills in icons, goals and tools. Hidden until createUI runs so an
+     unwired build never flashes empty bars. -->
+<div id="ui" hidden>
+  <header id="top">
+    <div class="toprow">
+      <button id="tier" class="pill" type="button"></button>
+      <span class="grow"></span>
+      <button id="research" class="btn icon" type="button" aria-label="Research"><span data-icon="research"></span><span class="badge" hidden></span></button>
+      <button id="menu" class="btn icon" type="button" aria-label="Menu"><span data-icon="menu"></span></button>
+    </div>
+    <button id="goals" class="goals" type="button" aria-label="Goals and Hub storage"></button>
+  </header>
+  <div id="hint" class="card" hidden>
+    <p>Put a Miner on ore, a Furnace touching it, then draw a Belt from the Furnace into the Hub.</p>
+    <button class="btn icon" type="button" aria-label="Dismiss hint"><span data-icon="close"></span></button>
+  </div>
+  <span class="grow"></span>
+  <footer id="bar">
+    <div id="ctx">
+      <button id="undo" class="btn round" type="button" aria-label="Undo"><span data-icon="undo"></span></button>
+      <span class="grow"></span>
+      <button id="recipe" class="chip" type="button" hidden><span class="sw"></span><span class="t"></span><span data-icon="down"></span></button>
+      <button id="rotate" class="btn round" type="button" aria-label="Rotate" hidden><span data-icon="rotate"></span></button>
+      <button id="flip" class="btn round" type="button" aria-label="Flip corner" hidden><span data-icon="flip"></span></button>
+      <button id="cancel" class="btn round" type="button" aria-label="Cancel" hidden><span data-icon="close"></span></button>
+      <button id="ok" class="btn round primary" type="button" aria-label="Place" hidden><span data-icon="check"></span></button>
+    </div>
+    <nav id="tools" aria-label="Build tools"></nav>
+  </footer>
+</div>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<button id="unfocus" class="btn round" type="button" aria-label="Show controls"><span data-icon="expand"></span></button>
+<div id="scrim" hidden></div>
+<section id="sheet" role="dialog" aria-labelledby="sheet-title" hidden>
+  <div class="sheet-head"><h2 id="sheet-title"></h2><button id="sheet-close" class="btn icon" type="button" aria-label="Close"><span data-icon="close"></span></button></div>
+  <div class="sheet-body"></div>
+</section>
 <script><!--JS--></script>
 </body>
 </html>
