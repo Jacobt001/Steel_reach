@@ -100,24 +100,24 @@ export const RINGS = [
 
 const T = (name, buildings, recipes, ores, goals) => ({ name, unlocks: { buildings, recipes, ores }, goals });
 export const TIERS = [
-  T('Ignition',    ['belt', 'miner', 'furnace'], ['iron_plate', 'copper_plate'], ['iron_ore', 'copper_ore', 'stone', 'coal'], { iron_plate: 120, copper_plate: 100 }),
+  T('Ignition',    ['belt', 'miner', 'furnace'], ['iron_plate', 'copper_plate'], ['iron_ore', 'copper_ore', 'stone', 'coal'], { iron_plate: 110, copper_plate: 110 }),
   T('Parts',       ['assembler', 'splitter', 'merger'], ['gear', 'wire'], [], { gear: 180, wire: 450 }),
-  T('Circuits',    ['tunnel', 'bridge'], ['brick', 'circuit'], [], { circuit: 170, brick: 240 }),
-  T('Steel',       ['fabricator', 'storage'], ['steel', 'motor'], [], { steel: 280, motor: 210 }),
-  T('Power',       ['generator', 'pole', 'foundry'], ['glass', 'silicon'], ['quartz'], { silicon: 200, glass: 400 }),
-  T('Electronics', [], ['frame', 'processor'], [], { processor: 450, frame: 600 }),
-  T('Oil',         ['refinery'], ['plastic', 'cable'], ['crude_oil'], { plastic: 1050, cable: 1400 }),
-  T('Automation',  [], ['robot_arm'], [], { robot_arm: 750, processor: 1150 }),
-  T('Titanium',    [], ['titanium_plate'], ['titanium_ore'], { titanium_plate: 1100, robot_arm: 900 }),
-  T('Aerospace',   [], ['turbine'], [], { turbine: 900, titanium_plate: 1400 }),
-  T('Nuclear',     [], ['fuel_cell'], ['uranium_ore'], { fuel_cell: 900, turbine: 850 }),
-  T('Fusion',      [], ['fusion_core'], [], { fusion_core: 1200 }),
+  T('Circuits',    ['tunnel', 'bridge'], ['brick', 'circuit'], [], { circuit: 170, brick: 230 }),
+  T('Steel',       ['fabricator', 'storage'], ['steel', 'motor'], [], { steel: 250, motor: 180 }),
+  T('Power',       ['generator', 'pole', 'foundry'], ['glass', 'silicon'], ['quartz'], { silicon: 180, glass: 370 }),
+  T('Electronics', [], ['frame', 'processor'], [], { processor: 420, frame: 560 }),
+  T('Oil',         ['refinery'], ['plastic', 'cable'], ['crude_oil'], { plastic: 1010, cable: 1320 }),
+  T('Automation',  [], ['robot_arm'], [], { robot_arm: 570, processor: 1150 }),
+  T('Titanium',    [], ['titanium_plate'], ['titanium_ore'], { titanium_plate: 1030, robot_arm: 630 }),
+  T('Aerospace',   [], ['turbine'], [], { turbine: 660, titanium_plate: 1500 }),
+  T('Nuclear',     [], ['fuel_cell'], ['uranium_ore'], { fuel_cell: 910, turbine: 650 }),
+  T('Fusion',      [], ['fusion_core'], [], { fusion_core: 600 }),
 ];
 
 export const RESEARCH = [
   { id: 'miner1', name: 'Faster Miners I',   desc: 'Miners work 40% faster.', tier: 1, cost: { iron_plate: 120 }, effect: { minerMult: 0.4 } },
   { id: 'miner2', name: 'Faster Miners II',  desc: 'Miners work another 40% faster.', tier: 4, req: 'miner1', cost: { steel: 120, gear: 300 }, effect: { minerMult: 0.4 } },
-  { id: 'miner3', name: 'Faster Miners III', desc: 'Miners work another 40% faster.', tier: 8, req: 'miner2', cost: { robot_arm: 120, steel: 300 }, effect: { minerMult: 0.4 } },
+  { id: 'miner3', name: 'Faster Miners III', desc: 'Miners work another 40% faster.', tier: 8, req: 'miner2', cost: { robot_arm: 90, steel: 250 }, effect: { minerMult: 0.4 } },
   { id: 'belt1',  name: 'Faster Belts I',    desc: 'Belts move 3 tiles per second.', tier: 1, cost: { copper_plate: 70, iron_plate: 60 }, effect: { beltLevel: 1 } },
   { id: 'belt2',  name: 'Faster Belts II',   desc: 'Belts move 4 tiles per second.', tier: 4, req: 'belt1', cost: { steel: 100, gear: 300 }, effect: { beltLevel: 1 } },
   { id: 'belt3',  name: 'Faster Belts III',  desc: 'Belts move 5 tiles per second.', tier: 9, req: 'belt2', cost: { titanium_plate: 160, motor: 220 }, effect: { beltLevel: 1 } },
@@ -126,10 +126,10 @@ export const RESEARCH = [
   { id: 'asm1',   name: 'Quick Assembly I',  desc: 'Assemblers and fabricators work 35% faster.', tier: 3, cost: { circuit: 220 }, effect: { asmMult: 0.35 } },
   { id: 'asm2',   name: 'Quick Assembly II', desc: 'Assemblers and fabricators work another 35% faster.', tier: 7, req: 'asm1', cost: { processor: 225 }, effect: { asmMult: 0.35 } },
   { id: 'longTunnels', name: 'Long Tunnels', desc: 'Tunnels can span 8 tiles of gap.', tier: 4, cost: { steel: 100, circuit: 120 }, effect: { tunnelGap: 8 } },
-  { id: 'bigBoxes',    name: 'Big Boxes',    desc: 'Storage boxes hold 500 items.', tier: 6, cost: { frame: 600 }, effect: { storageCap: 500 } },
+  { id: 'bigBoxes',    name: 'Big Boxes',    desc: 'Storage boxes hold 500 items.', tier: 6, cost: { frame: 100 }, effect: { storageCap: 500 } },
   { id: 'effGen',      name: 'Efficient Generators', desc: 'Generators give 50% more power per coal.', tier: 6, cost: { processor: 100, silicon: 120 }, effect: { genMult: 1.5 } },
   { id: 'widePoles',   name: 'Wide Poles',   desc: 'Poles reach 12 tiles and cover 11x11.', tier: 7, cost: { cable: 750 }, effect: { poleReach: 12, coverHalf: 5 } },
-  { id: 'deepDrills',  name: 'Deep Drills',  desc: 'Miners yield 2 items per cycle.', tier: 10, cost: { turbine: 250 }, effect: { minerYield: 2 } },
+  { id: 'deepDrills',  name: 'Deep Drills',  desc: 'Miners yield 2 items per cycle.', tier: 10, cost: { turbine: 170 }, effect: { minerYield: 2 } },
 ];
 
 export const BAL = {
