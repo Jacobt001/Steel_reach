@@ -10,7 +10,7 @@
      --ui-bad are shades of --accent and --bad because the map's own shades, as text or behind text,
      fall short of 4.5:1 contrast on the panels. */
   --ui-panel2: #e4eae0; --ui-line: rgba(29, 42, 34, 0.13); --ui-muted: #5a6a60;
-  --ui-accent: #2f7d5b; --ui-on-accent: #ffffff; --ui-bad: #b3362b; --ui-on-bad: #ffffff;
+  --ui-accent: #2f7d5b; --ui-on-accent: #ffffff; --ui-bad: #b3362b; --ui-on-bad: #ffffff; --ui-stall: #8a5a00;
   /* Declared once: var() resolves per theme because --warn and --shadow change with it. */
   --ui-badge: var(--warn); --ui-shadow: 0 2px 10px var(--shadow);
 }
@@ -22,7 +22,7 @@
     --panel: #212a25; --shadow: rgba(0, 0, 0, 0.38); --item-edge: rgba(236, 245, 239, 0.62);
     --warn: #f2b23a; --bad: #ff5f52; --accent: #4cc590; --power: #f5cc3a;
     --ui-panel2: #2c3833; --ui-line: rgba(219, 231, 222, 0.13); --ui-muted: #93a49a;
-    --ui-accent: var(--accent); --ui-on-accent: #0d1410; --ui-bad: #ff7a6e; --ui-on-bad: #1a0d0c;
+    --ui-accent: var(--accent); --ui-on-accent: #0d1410; --ui-bad: #ff7a6e; --ui-on-bad: #1a0d0c; --ui-stall: var(--warn);
   }
 }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; overscroll-behavior: none; }
@@ -164,7 +164,10 @@ body.focus #toast { top: calc(env(safe-area-inset-top) + 66px); }
 .sheet-body > * { flex: none; }
 .sheet-body h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ui-muted); margin-top: 6px; }
 .status { font-weight: 600; padding: 10px 12px; border-radius: 10px; background: var(--ui-panel2); }
-.status.bad { color: var(--ui-bad); }
+.status.bad { color: var(--ui-bad); box-shadow: inset 4px 0 0 var(--bad); }
+/* Blocked conveyors match their map marker: the bar is exactly the marker colour (--warn amber for
+   a stall, --bad red otherwise); the text is a shade of it that stays readable on the panel. */
+.status.stall { color: var(--ui-stall); box-shadow: inset 4px 0 0 var(--warn); }
 .lead { font-size: 15px; }
 .kv { display: flex; justify-content: space-between; gap: 12px; font-variant-numeric: tabular-nums; }
 .kv .k { color: var(--ui-muted); }
@@ -207,7 +210,8 @@ body.focus #toast { top: calc(env(safe-area-inset-top) + 66px); }
 textarea {
   width: 100%; min-height: 88px; resize: vertical; padding: 10px; border-radius: 10px; border: 1px solid var(--ui-line);
   background: var(--bg); color: var(--fg); font: 16px/1.3 ui-monospace, Menlo, monospace; /* 16 px stops iOS zooming on focus */
-  -webkit-user-select: text; user-select: text; touch-action: auto;
+  /* body turns the callout off for the map; iOS needs it back here or long-press shows no Paste (R24). */
+  -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; touch-action: auto;
 }
 .note { font-size: 12.5px; color: var(--ui-muted); }
 

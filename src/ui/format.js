@@ -166,7 +166,8 @@ export function conveyorInfo(e) {
     case 'splitter': case 'merger': lanes = [{ label: null, items: e.hold ? [e.hold.item] : [] }]; break;
     default: lanes = [{ label: null, items: ids(e.items) }];
   }
-  return { lanes, blocked: e.blocked ?? null };
+  // kind ('never' | 'stall') picks the colour, the same split the map markers use.
+  return { lanes, blocked: e.blocked ?? null, kind: e.blocked ? e.blockedKind ?? null : null };
 }
 
 // Fixed item order, not by count, so inspector rows don't jump around while a box fills.

@@ -87,13 +87,15 @@ test('generator inspector finds its network through nets[].gens', () => {
 });
 
 test('conveyor inspector: items front to back and the blocked reason', () => {
-  assert.deepEqual(conveyorInfo({type:'belt', items:[{item:'coal', pos:0.875}, {item:'iron_ore', pos:0.6}], blocked:"Furnace can't use Coal"}),
-    {lanes:[{label:null, items:['coal', 'iron_ore']}], blocked:"Furnace can't use Coal"});
-  assert.deepEqual(conveyorInfo({type:'bridge', laneH:[{item:'gear', pos:0.2}], laneV:[], blocked:null}),
-    {lanes:[{label:'Horizontal', items:['gear']}, {label:'Vertical', items:[]}], blocked:null});
+  assert.deepEqual(conveyorInfo({type:'belt', items:[{item:'coal', pos:0.875}, {item:'iron_ore', pos:0.6}], blocked:"Furnace can't use Coal", blockedKind:'never'}),
+    {lanes:[{label:null, items:['coal', 'iron_ore']}], blocked:"Furnace can't use Coal", kind:'never'});
+  assert.deepEqual(conveyorInfo({type:'bridge', laneH:[{item:'gear', pos:0.2}], laneV:[], blocked:null, blockedKind:null}),
+    {lanes:[{label:'Horizontal', items:['gear']}, {label:'Vertical', items:[]}], blocked:null, kind:null});
   assert.deepEqual(conveyorInfo({type:'splitter', hold:{item:'wire', pos:0.5}, blocked:null}).lanes, [{label:null, items:['wire']}]);
-  assert.deepEqual(conveyorInfo({type:'merger', hold:null, blocked:'x'}), {lanes:[{label:null, items:[]}], blocked:'x'});
-  assert.deepEqual(conveyorInfo({type:'tunnel_in', under:[{item:'gear', left:3}]}), {lanes:[{label:'Underground', items:['gear']}], blocked:null});
+  // The kind picks the colour, as on the map: 'stall' (full of an item) amber, 'never' red.
+  assert.deepEqual(conveyorInfo({type:'merger', hold:null, blocked:'Assembler is full of Gear', blockedKind:'stall'}),
+    {lanes:[{label:null, items:[]}], blocked:'Assembler is full of Gear', kind:'stall'});
+  assert.deepEqual(conveyorInfo({type:'tunnel_in', under:[{item:'gear', left:3}]}), {lanes:[{label:'Underground', items:['gear']}], blocked:null, kind:null});
 });
 
 test('storage contents, research costs and the first-run hint', () => {

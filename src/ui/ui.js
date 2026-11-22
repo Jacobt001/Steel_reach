@@ -519,7 +519,10 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
           lanes.replaceChildren(...info.lanes.map((l) => h('div', { class: 'lane' }, l.label && h('h3', { text: l.label }), itemsView(l.items))));
         }
         // The sim writes this text ("Furnace can't use Coal"); no marker means nothing is wrong.
-        setText(status, info.blocked ?? 'Not blocked'); flag(status, 'bad', !!info.blocked);
+        // Coloured like the map marker: 'stall' (full of an item, clears itself) amber, anything else red.
+        setText(status, info.blocked ?? 'Not blocked');
+        const stall = !!info.blocked && info.kind === 'stall';
+        flag(status, 'stall', stall); flag(status, 'bad', !!info.blocked && !stall);
         setText(spdVal, `${BAL.beltTilesPerSec[g.mods.beltLevel]} tiles/s`);
       },
     };
@@ -574,8 +577,12 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
       on(focus, () => { closeSheet(); setFocus(true); });
       const copy = btn('btn wide', 'Copy save code');
       on(copy, () => {
-        Promise.resolve().then(() => actions.copySaveCode?.())
-          .then(() => toast('Save code copied'), () => toast("Couldn't copy the save code"));
+        // Called synchronously in the tap (R24): iOS only allows clipboard writes inside the gesture,
+        // and even a microtask's delay can lose it. Only the result is awaited.
+        let res;
+        try { res = actions.copySaveCode ? actions.copySaveCode() : Promise.reject(new Error('No copy action')); }
+        catch (err) { res = Promise.reject(err); }
+        Promise.resolve(res).then(() => toast('Save code copied'), () => toast("Couldn't copy the save code"));
       });
       const paste = h('textarea', { placeholder: 'Paste a save code here', rows: '3', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Save code' });
       const load = btn('btn wide');
@@ -700,9 +707,13 @@ export function createUI({ root = document, game, tools, sfx, actions = {} }) {
     // Build bar state follows taps, so it is checked every frame (a few cached compares).
     const tool = tools?.tool ?? 'pan';
     if (tool !== lastTool) {
-      const old = toolBtns.get(lastTool), cur = toolBtns.get(tool);
-      if (old) { flag(old.b, 'on', false); old.b.setAttribute('aria-pressed', 'false'); }
-      if (cur) { flag(cur.b, 'on', true); cur.b.setAttribute('aria-pressed', 'true'); }
+      // Every button, not just the previous one: sync() forgets lastTool, so the old highlight
+      // can't be found that way. Only runs on a change, and the cached writers skip unchanged buttons.
+      for (const [id, t] of toolBtns) {
+        const pressed = id === tool;
+        flag(t.b, 'on', pressed);
+        if (t.b._p !== pressed) { t.b._p = pressed; t.b.setAttribute('aria-pressed', pressed ? 'true' : 'false'); }
+      }
       lastTool = tool;
       show(E.rotate, BUILDINGS[tool]?.dir === true);
       show(E.recipe, RECIPE_MACHINES.includes(tool));
