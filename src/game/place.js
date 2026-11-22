@@ -1,8 +1,9 @@
 // Placement rules. Check order is fixed by the brief so the player sees the most basic problem first.
-import { BUILDINGS, RECIPES, ITEMS, ORE_TIER, MAP } from '../config.js';
+import { BUILDINGS, RECIPES, ITEMS, ORE_TIER, MAP, DX, DY } from '../config.js';
 import { idx } from '../world.js';
 import { addEnt, removeEnt, entAt, sizeOf, CRAFTERS } from './state.js';
 import { isUnlocked } from './progress.js';
+import { doAction } from './undo.js';
 
 const no = (reason) => ({ ok: false, reason });
 const unlockTier = (type) => BUILDINGS[type === 'tunnel_in' || type === 'tunnel_out' ? 'tunnel' : type].tier;
@@ -43,6 +44,8 @@ function defaultRecipe(game, type, opts) {
 }
 
 export function place(game, type, x, y, opts = {}) {
+  // A tunnel is two entities; going through placeTunnel is what lets undo record both ends.
+  if (type === 'tunnel') return opts.exit ? (placeTunnel(game, x, y, opts.dir ?? 0, opts.exit[0], opts.exit[1]).ok ? entAt(game, x, y) : null) : null;
   const recipe = defaultRecipe(game, type, opts);
   // Check the explicit recipe, not a remembered one, so a stale lastRecipe never blocks placing.
   if (!canPlace(game, type, x, y, { ...opts, recipe: opts.recipe }).ok) return null;
@@ -58,6 +61,67 @@ export function place(game, type, x, y, opts = {}) {
 export function erase(game, x, y) {
   const ent = entAt(game, x, y);
   if (!ent || ent.type === 'hub') return false;
-  removeEnt(game, ent);
+  // Either tunnel end takes its partner with it; items underground are dropped with the entrance.
+  const partner = (ent.type === 'tunnel_in' || ent.type === 'tunnel_out') ? game.ents.get(ent.pair) : null;
+  doAction(game, () => { removeEnt(game, ent); if (partner) removeEnt(game, partner); });
   return true;
+}
+
+// Tunnel exits sit straight ahead with 1..tunnelGap tiles between the two ends.
+export function placeTunnel(game, x, y, dir, ex, ey) {
+  const along = (ex - x) * DX[dir] + (ey - y) * DY[dir];
+  const across = (ex - x) * DY[dir] + (ey - y) * DX[dir];
+  if (across !== 0 || along <= 0) return no('Exit must be straight ahead');
+  if (along < 2) return no('Too close for a tunnel');
+  if (along - 1 > game.mods.tunnelGap) return no('Too far for a tunnel');
+  for (const [t, tx, ty] of [['tunnel_in', x, y], ['tunnel_out', ex, ey]]) {
+    const c = canPlace(game, t, tx, ty);
+    if (!c.ok) return c;
+  }
+  doAction(game, () => {
+    const a = addEnt(game, 'tunnel_in', x, y, { dir });
+    const b = addEnt(game, 'tunnel_out', ex, ey, { dir, pair: a.id });
+    a.pair = b.id;
+  });
+  return { ok: true };
+}
+
+export function validTunnelExits(game, x, y, dir) {
+  const out = [];
+  for (let gap = 1; gap <= game.mods.tunnelGap; gap++) {
+    const ex = x + DX[dir] * (gap + 1), ey = y + DY[dir] * (gap + 1);
+    if (canPlace(game, 'tunnel_out', ex, ey).ok) out.push([ex, ey]);
+  }
+  return out;
+}
+
+// Draws a belt along path tile by tile. A perpendicular belt crossed head-on becomes a bridge
+// (the brief's auto-bridge) so the old line keeps flowing; everything else is re-pointed or skipped.
+export function placeBeltPath(game, path, dirs) {
+  const res = { placed: 0, bridges: 0, skipped: [] };
+  doAction(game, () => {
+    path.forEach(([x, y], i) => {
+      const d = dirs[i];
+      const ent = entAt(game, x, y);
+      if (!ent) {
+        if (place(game, 'belt', x, y, { dir: d })) res.placed++; else res.skipped.push([x, y]);
+      } else if (ent.type === 'belt') {
+        const through = i > 0 && dirs[i - 1] === d && ent.dir % 2 !== d % 2;
+        if (through && isUnlocked(game, 'buildings', 'bridge')) {
+          const old = ent;
+          removeEnt(game, old);
+          const horizontal = d % 2 === 1;
+          const b = place(game, 'bridge', x, y, { dirH: horizontal ? d : old.dir, dirV: horizontal ? old.dir : d });
+          // The old belt's items keep their lane so nothing on the crossed line is lost.
+          (old.dir === b.dirH ? b.laneH : b.laneV).push(...old.items);
+          res.bridges++; res.placed++;
+        } else { ent.dir = d; game.topoDirty = true; res.placed++; }
+      } else if (ent.type === 'bridge') {
+        if (d % 2 === 1) ent.dirH = d; else ent.dirV = d;
+        game.topoDirty = true; res.placed++;
+      } else res.skipped.push([x, y]);
+    });
+  });
+  if (res.bridges) game.events.push({ type: 'toast', text: 'Bridge placed' });
+  return res;
 }
