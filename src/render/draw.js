@@ -268,6 +268,33 @@ function lane(game, items, x, y, inDir, dir, kind, va, v) {
   }
 }
 
+// Item sprites: edge silhouette plus colour, one small canvas per item type, redrawn when the
+// zoom, device scale or edge colour changes (a few entries stay cached so the magnifier's second
+// zoom doesn't thrash). Null where no canvas can be made (Node tests): paths are used instead.
+const SPRITE_Z = 36;
+const spriteSets = new Map();
+function spritesFor(ctx, r, re, theme) {
+  if (typeof OffscreenCanvas === 'undefined' && typeof document === 'undefined') return null;
+  const dpr = (typeof ctx.getTransform === 'function' ? ctx.getTransform()?.a : 0) || 1;
+  const key = `${r.toFixed(2)}|${dpr}|${theme.itemEdge}`;
+  let set = spriteSets.get(key);
+  if (set !== undefined) { spriteSets.delete(key); spriteSets.set(key, set); return set; }
+  const size = Math.ceil(2 * re * 1.35 + 2), px = Math.ceil(size * dpr);
+  set = { size: px / dpr, dpr, img: [] };
+  for (let i = 0; i < NI; i++) {
+    const c = typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: px, height: px }) : new OffscreenCanvas(px, px);
+    const g = c.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const h = set.size / 2;
+    g.beginPath(); ITEM_SHAPE[i](g, h, h, re); g.fillStyle = theme.itemEdge; g.fill();
+    g.beginPath(); ITEM_SHAPE[i](g, h, h, r); g.fillStyle = ITEM_COLOR[i]; g.fill();
+    set.img.push(c);
+  }
+  spriteSets.set(key, set);
+  if (spriteSets.size > 6) spriteSets.delete(spriteSets.keys().next().value);
+  return set;
+}
+
 function drawItems(ctx, game, alpha, theme) {
   IC.fill(0);
   const v = beltSpeed(game), va = v * alpha;
@@ -293,6 +320,19 @@ function drawItems(ctx, game, alpha, theme) {
   for (let i = 0; i < NI; i++) total += IC[i];
   if (total === 0) return;
   const r = ITEM_R * Z, re = r + Math.max(0.9, Z * 0.03);
+  // Zoomed out, thousands of tiny items are slow as vector paths (10,000 items made zoom 20 the
+  // slowest view, 40-50 fps in headless Chrome); a pre-drawn sprite per type blits instead.
+  const sp = Z < SPRITE_Z ? spritesFor(ctx, r, re, theme) : null;
+  if (sp !== null) {
+    for (let i = 0; i < NI; i++) {
+      const n = IC[i];
+      if (n === 0) continue;
+      const b = IB[i], img = sp.img[i], h = sp.size / 2, d = sp.dpr;
+      // Whole device pixels: an unscaled, unshifted blit is the fast path.
+      for (let k = 0; k < 2 * n; k += 2) ctx.drawImage(img, Math.round((b[k] - h) * d) / d, Math.round((b[k + 1] - h) * d) / d, sp.size, sp.size);
+    }
+    return;
+  }
   ctx.beginPath();
   for (let i = 0; i < NI; i++) {
     const n = IC[i], b = IB[i], shape = ITEM_SHAPE[i];

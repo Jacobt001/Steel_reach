@@ -197,14 +197,53 @@ await tool(page, 'Pan');
 const idle = await measure(page);
 log(idle.fps >= FPS_MIN, '6. idle fps over 5 s', idle);
 
-// 7. stress fps and tick cost, camera on the loops. Also the zoomed-out views the player uses.
-const counts = await page.evaluate(() => { const sr = window.__steelreach; sr.stress(3000, 10000); const c = [...sr.game.conveyors].find((b) => Math.hypot(b.x - 80, b.y - 80) > 24); sr.cam.x = c.x; sr.cam.y = c.y; return sr.actions.perf(); });
+// 7. stress fps and tick cost. stress() fills from the map's top-left corner, so the camera is put
+// over the densest window of belts at each zoom (through the real wheel path, which runs clampCam)
+// and the view must hold a floor of entities and belt items before fps means anything.
+const counts = await page.evaluate(() => { const sr = window.__steelreach; sr.stress(3000, 10000); return sr.actions.perf(); });
 log(counts.buildings === 3000 && counts.items === 10000, 'stress reached the counts', counts);
-const stressRes = {};
+// Densest window for zoom z: prefix sums over a per-tile entity count, then the best centre.
+async function aimAtFactory(z) {
+  return page.evaluate((z) => {
+    const sr = window.__steelreach, { cam, game } = sr, N = 160;
+    cam.z = z;
+    const hw = cam.vw / 2 / z, hh = cam.vh / 2 / z;
+    const ps = new Float64Array((N + 1) * (N + 1));
+    const at = (x, y) => y * (N + 1) + x;
+    const cnt = new Uint8Array(N * N);
+    for (const e of game.ents.values()) if (e.type !== 'hub') cnt[e.y * N + e.x] = 1;
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) ps[at(x + 1, y + 1)] = cnt[y * N + x] + ps[at(x, y + 1)] + ps[at(x + 1, y)] - ps[at(x, y)];
+    const w = Math.min(N, Math.ceil(hw * 2)), h = Math.min(N, Math.ceil(hh * 2));
+    let best = -1, bx = 0, by = 0;
+    for (let y = 0; y + h <= N; y++) for (let x = 0; x + w <= N; x++) {
+      const v = ps[at(x + w, y + h)] - ps[at(x, y + h)] - ps[at(x + w, y)] + ps[at(x, y)];
+      if (v > best) { best = v; bx = x; by = y; }
+    }
+    cam.x = bx + w / 2; cam.y = by + h / 2;
+    // A zero-delta wheel is zoomAt(factor 1): the camera API's own clamp.
+    document.getElementById('game').dispatchEvent(new WheelEvent('wheel', { deltaY: 0, clientX: 195, clientY: 300, cancelable: true }));
+    // What the renderer will draw: entities and belt items whose tiles fall inside visibleTiles(cam).
+    const x0 = Math.max(0, Math.floor(cam.x - hw)), x1 = Math.min(N - 1, Math.floor(cam.x + hw));
+    const y0 = Math.max(0, Math.floor(cam.y - hh)), y1 = Math.min(N - 1, Math.floor(cam.y + hh));
+    let ents = 0, items = 0;
+    for (const e of game.ents.values()) {
+      if (e.type === 'hub' || e.x < x0 || e.x > x1 || e.y < y0 || e.y > y1) continue;
+      ents++;
+      if (e.items) items += e.items.length;
+    }
+    return { cam: [+cam.x.toFixed(1), +cam.y.toFixed(1), cam.z], ents, items, tiles: [x0, y0, x1, y1] };
+  }, z);
+}
+// Floors are about half of what the densest window holds at each zoom, so an emptier view fails.
+const VIEW_MIN = { 44: { ents: 60, items: 150 }, 20: { ents: 250, items: 900 }, 16: { ents: 350, items: 1300 } };
+const stressRes = {}, views = {};
 for (const z of [44, 20, 16]) {
-  await page.evaluate((z) => { window.__steelreach.cam.z = z; }, z);
+  views[z] = await aimAtFactory(z);
+  log(views[z].ents >= VIEW_MIN[z].ents && views[z].items >= VIEW_MIN[z].items, `7. view at zoom ${z} is over the factory`, views[z]);
   await sleep(1500);
   stressRes[z] = await measure(page);
+  // After measuring: a screenshot stalls frames and would pollute the fps.
+  if (z === 20) await page.screenshot({ path: join(SHOTS, '7-stress-zoom20-light.png') });
   log(stressRes[z].fps >= FPS_MIN && stressRes[z].tickMs <= TICK_MS_MAX, `7. stress fps and tick ms at zoom ${z}`, stressRes[z]);
 }
 log(a.errors.length === 0, '7. stress runs without errors', a.errors);
@@ -212,9 +251,11 @@ log(a.errors.length === 0, '7. stress runs without errors', a.errors);
 // 8. save code size for the stress factory
 const saveKB = await page.evaluate(async () => {
   localStorage.removeItem('steelreach');
+  // codeText() is encodeSaveCode(serialize(game)), the string Menu > Copy save code puts on the clipboard.
+  const code = await window.__steelreach.session.codeText();
+  // Reload check below needs the phone save written too.
   await window.__steelreach.session.flush();
-  for (let i = 0; i < 100 && !localStorage.getItem('steelreach'); i++) await new Promise((r) => setTimeout(r, 100));
-  return (localStorage.getItem('steelreach') ?? '').length / 1024;
+  return code.length / 1024;
 });
 log(saveKB > 0 && saveKB < SAVE_KB_MAX, '8. stress save code is under 300 KB', saveKB);
 
@@ -247,7 +288,7 @@ const summary = {
   fpsStress: +stressRes[44].fps.toFixed(1),
   tickMsStress: +stressRes[44].tickMs.toFixed(2),
   saveCodeKB: +saveKB.toFixed(1),
-  extra: { stressByZoom: Object.fromEntries(Object.entries(stressRes).map(([z, r]) => [z, { fps: +r.fps.toFixed(1), tickMs: +r.tickMs.toFixed(2) }])) },
+  extra: { views, stressByZoom: Object.fromEntries(Object.entries(stressRes).map(([z, r]) => [z, { fps: +r.fps.toFixed(1), tickMs: +r.tickMs.toFixed(2) }])) },
 };
 console.log(JSON.stringify(summary));
 if (failures.length) { console.error(`\n${failures.length} check(s) failed:\n- ${failures.join('\n- ')}`); process.exit(1); }
