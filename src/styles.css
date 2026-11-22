@@ -1,0 +1,10 @@
+/* Theme follows the phone; --bg/--fg are the only colors the placeholder needs. */
+:root { --bg: #eef2ea; --fg: #1d2a22; }
+@media (prefers-color-scheme: dark) { :root { --bg: #121815; --fg: #dbe7de; } }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; overscroll-behavior: none; }
+/* The Claude iOS app draws under its top bar, so keep content clear of the safe areas. */
+body {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  box-sizing: border-box; touch-action: none; -webkit-user-select: none; user-select: none;
+}
+#game { display: block; width: 100%; height: 100%; }
